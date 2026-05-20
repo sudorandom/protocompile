@@ -39,6 +39,16 @@ func TestAssemble(t *testing.T) {
 			input:    `1: "testing"`,
 			expected: []byte{0x08, 0x07, 't', 'e', 's', 't', 'i', 'n', 'g'},
 		},
+		{
+			name:     "nested block",
+			input:    "4: [ 1: 42 ]",
+			expected: []byte{0x22, 0x02, 0x08, 0x2a},
+		},
+		{
+			name:     "nested group",
+			input:    "5: !{ 1: 42 }",
+			expected: []byte{0x2b, 0x08, 0x2a, 0x2c},
+		},
 	}
 
 	for _, tt := range tests {

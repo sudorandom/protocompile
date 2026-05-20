@@ -124,7 +124,7 @@ func (a *assembler) assembleLiteral(l ast.Literal) {
 func (a *assembler) assembleBlock(b ast.Block) {
 	tok := b.Token()
 	switch tok.Keyword() {
-	case keyword.LBracket:
+	case keyword.LBracket, keyword.Brackets:
 		// Length-prefixed block
 		sub := &assembler{}
 		for decl := range seq.Values(b.Decls()) {

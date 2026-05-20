@@ -116,8 +116,8 @@ const (
 	DeclKindBlock
 )
 
-func (k DeclKind) DecodeDynID(_, hi int32) DeclKind {
-	return DeclKind(hi)
+func (k DeclKind) DecodeDynID(lo, _ int32) DeclKind {
+	return DeclKind(lo)
 }
 
 func (k DeclKind) EncodeDynID(value int32) (lo, hi int32, ok bool) {

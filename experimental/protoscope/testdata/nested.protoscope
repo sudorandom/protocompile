@@ -1,3 +1,2 @@
-4: " \x08*" # This is a hex literal in string for now as my assembler doesn't handle blocks
-# Once blocks are implemented, it should be:
-# 4: [ 1: 42 ]
+4: [ 1: 42 ]
+
