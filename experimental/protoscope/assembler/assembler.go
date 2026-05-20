@@ -54,12 +54,20 @@ func (a *assembler) assembleField(f ast.Field) {
 	// Heuristic for wire type if not specified.
 	wireType := uint64(0)
 	val := f.Value()
-	if !val.IsZero() && val.Kind() == ast.DeclKindBlock {
-		block := id.Wrap(val.Context(), id.ID[ast.Block](val.ID().Value()))
-		if block.Token().Keyword() == keyword.Bang {
-			wireType = 3 // SGROUP
-		} else {
-			wireType = 2 // LEN
+	if !val.IsZero() {
+		switch val.Kind() {
+		case ast.DeclKindBlock:
+			block := id.Wrap(val.Context(), id.ID[ast.Block](val.ID().Value()))
+			if block.Token().Keyword() == keyword.Bang {
+				wireType = 3 // SGROUP
+			} else {
+				wireType = 2 // LEN
+			}
+		case ast.DeclKindLiteral:
+			lit := id.Wrap(val.Context(), id.ID[ast.Literal](val.ID().Value()))
+			if lit.Token().Kind() == token.String {
+				wireType = 2 // LEN
+			}
 		}
 	}
 
@@ -91,6 +99,31 @@ func (a *assembler) assembleField(f ast.Field) {
 		return
 	}
 
+	if wireType == 2 { // LEN
+		// Length-delimited fields must be prefixed by their length.
+		// Some values (blocks and strings) are self-length-delimited.
+		isSelfDelimited := false
+		if !val.IsZero() && val.Kind() == ast.DeclKindBlock {
+			isSelfDelimited = true
+		}
+		if !val.IsZero() && val.Kind() == ast.DeclKindLiteral {
+			lit := id.Wrap(val.Context(), id.ID[ast.Literal](val.ID().Value()))
+			if lit.Token().Kind() == token.String {
+				isSelfDelimited = true
+			}
+		}
+
+		if isSelfDelimited {
+			a.assembleDecl(val)
+		} else {
+			sub := &assembler{}
+			sub.assembleDecl(val)
+			a.writeVarint(uint64(len(sub.buf)))
+			a.buf = append(a.buf, sub.buf...)
+		}
+		return
+	}
+
 	a.assembleDecl(val)
 }
 
@@ -99,19 +132,26 @@ func (a *assembler) assembleLiteral(l ast.Literal) {
 	switch tok.Kind() {
 	case token.Number:
 		// Check for suffix hints
-		switch {
-		case tok.AsNumber().Suffix().Text() == "i32":
-			v, _ := tok.AsNumber().Int()
+		num := tok.AsNumber()
+		suffix := num.Suffix().Text()
+		switch suffix {
+		case "i32":
+			v, _ := num.Int()
 			var buf [4]byte
 			binary.LittleEndian.PutUint32(buf[:], uint32(v))
 			a.buf = append(a.buf, buf[:]...)
-		case tok.AsNumber().Suffix().Text() == "i64":
-			v, _ := tok.AsNumber().Int()
+		case "i64":
+			v, _ := num.Int()
 			var buf [8]byte
 			binary.LittleEndian.PutUint64(buf[:], v)
 			a.buf = append(a.buf, buf[:]...)
+		case "z":
+			v := num.Value().Int(nil).Int64()
+			// Zigzag encoding: (n << 1) ^ (n >> 63)
+			zigzag := uint64((v << 1) ^ (v >> 63))
+			a.writeVarint(zigzag)
 		default:
-			v, _ := tok.AsNumber().Int()
+			v, _ := num.Int()
 			a.writeVarint(v)
 		}
 	case token.String:
@@ -124,7 +164,7 @@ func (a *assembler) assembleLiteral(l ast.Literal) {
 func (a *assembler) assembleBlock(b ast.Block) {
 	tok := b.Token()
 	switch tok.Keyword() {
-	case keyword.LBracket, keyword.Brackets:
+	case keyword.LBracket, keyword.Brackets, keyword.LBrace, keyword.Braces:
 		// Length-prefixed block
 		sub := &assembler{}
 		for decl := range seq.Values(b.Decls()) {

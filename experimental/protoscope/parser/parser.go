@@ -30,9 +30,9 @@ var lex = lexer.Lexer{
 		switch k {
 		case keyword.Hash:
 			return lexer.LineComment
-		case keyword.LBracket:
+		case keyword.LBracket, keyword.LBrace:
 			return lexer.BracketKeyword
-		case keyword.RParen, keyword.RBracket:
+		case keyword.RParen, keyword.RBracket, keyword.RBrace:
 			return lexer.BracketKeyword
 		default:
 			return lexer.SoftKeyword
@@ -99,7 +99,8 @@ func (p *parser) parseDecl(c *token.Cursor) ast.DeclAny {
 	if tok.Keyword() == keyword.Bang {
 		clone := c.Clone()
 		_ = clone.Next()
-		if clone.Peek().Keyword() == keyword.LBrace {
+		next := clone.Peek()
+		if next.Keyword() == keyword.LBrace || next.Keyword() == keyword.Braces {
 			return p.parseGroup(c).AsAny()
 		}
 	}
@@ -157,8 +158,13 @@ func (p *parser) parseBlock(c *token.Cursor) ast.Block {
 
 func (p *parser) parseGroup(c *token.Cursor) ast.Block {
 	bang := c.Next()
-	_ = c.Next()                       // consume {
 	b := p.file.Nodes().NewBlock(bang) // Use bang as the anchor token for the group
+
+	next := c.Next()
+	if children := next.Children(); children != nil {
+		p.parse(b.Decls(), children)
+		return b
+	}
 
 	for !c.Done() && c.Peek().Keyword() != keyword.RBrace {
 		m := c.Mark()

@@ -28,10 +28,13 @@ import (
 
 func main() {
 	disassembleFlag := flag.Bool("d", false, "disassemble binary input to protoscope text")
+	explicitWireTypes := flag.Bool("explicit-wire-types", false, "emit explicit wire types in disassembly")
+	explicitLengthPrefixes := flag.Bool("explicit-length-prefixes", false, "emit explicit length prefixes in disassembly")
+	noGroups := flag.Bool("no-groups", false, "disable group output in disassembly")
 	flag.Parse()
 
 	if flag.NArg() < 1 {
-		fmt.Fprintln(os.Stderr, "usage: pbscope [-d] <file>")
+		fmt.Fprintln(os.Stderr, "usage: pbscope [-d] [-explicit-wire-types] [-explicit-length-prefixes] [-no-groups] <file>")
 		os.Exit(1)
 	}
 
@@ -43,7 +46,12 @@ func main() {
 	}
 
 	if *disassembleFlag {
-		if err := disassembler.Disassemble(data, os.Stdout); err != nil {
+		opts := disassembler.Options{
+			ExplicitWireTypes:      *explicitWireTypes,
+			ExplicitLengthPrefixes: *explicitLengthPrefixes,
+			NoGroups:               *noGroups,
+		}
+		if err := disassembler.DisassembleWithOptions(data, os.Stdout, opts); err != nil {
 			fmt.Fprintf(os.Stderr, "disassembly error: %v\n", err)
 			os.Exit(1)
 		}

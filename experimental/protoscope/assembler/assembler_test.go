@@ -37,7 +37,7 @@ func TestAssemble(t *testing.T) {
 		{
 			name:     "string literal",
 			input:    `1: "testing"`,
-			expected: []byte{0x08, 0x07, 't', 'e', 's', 't', 'i', 'n', 'g'},
+			expected: []byte{0x0a, 0x07, 't', 'e', 's', 't', 'i', 'n', 'g'},
 		},
 		{
 			name:     "nested block",

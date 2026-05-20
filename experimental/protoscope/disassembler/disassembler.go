@@ -24,15 +24,28 @@ import (
 	"unicode/utf8"
 )
 
+// Options contains disassembly options.
+type Options struct {
+	ExplicitWireTypes      bool
+	ExplicitLengthPrefixes bool
+	NoGroups               bool
+}
+
 // Disassemble translates Protobuf wire format into protoscope text.
 func Disassemble(data []byte, out io.Writer) error {
-	d := &disassembler{data: data}
+	return DisassembleWithOptions(data, out, Options{})
+}
+
+// DisassembleWithOptions translates Protobuf wire format into protoscope text with options.
+func DisassembleWithOptions(data []byte, out io.Writer, opts Options) error {
+	d := &disassembler{data: data, opts: opts}
 	return d.disassemble(out, 0, 0, 0)
 }
 
 type disassembler struct {
 	data []byte
 	off  int
+	opts Options
 }
 
 const (
@@ -63,8 +76,12 @@ func (d *disassembler) disassemble(out io.Writer, indent int, groupTag uint64, d
 
 		// If we're in a group and see an EGroup with the same tag, we're done.
 		if groupTag != 0 && wireType == wireEGroup && tag == groupTag {
-			d.off += n
-			return nil
+			if d.opts.NoGroups {
+				// Continue, don't return.
+			} else {
+				d.off += n
+				return nil
+			}
 		}
 
 		if wireType > 5 {
@@ -74,6 +91,24 @@ func (d *disassembler) disassemble(out io.Writer, indent int, groupTag uint64, d
 
 		fmt.Fprint(out, strings.Repeat("  ", indent))
 		fmt.Fprintf(out, "%d:", tag)
+		if d.opts.ExplicitWireTypes {
+			switch wireType {
+			case wireVarint:
+				fmt.Fprint(out, "VARINT ")
+			case wireI64:
+				fmt.Fprint(out, "I64 ")
+			case wireLen:
+				fmt.Fprint(out, "LEN ")
+			case wireSGroup:
+				fmt.Fprint(out, "SGROUP ")
+			case wireEGroup:
+				fmt.Fprint(out, "EGROUP ")
+			case wireI32:
+				fmt.Fprint(out, "I32 ")
+			}
+		} else {
+			fmt.Fprint(out, " ")
+		}
 		d.off += n
 
 		switch wireType {
@@ -83,7 +118,7 @@ func (d *disassembler) disassemble(out io.Writer, indent int, groupTag uint64, d
 				return fmt.Errorf("invalid varint at offset %d", d.off)
 			}
 			d.off += n
-			fmt.Fprintf(out, " %d\n", v)
+			fmt.Fprintf(out, "%d\n", v)
 
 		case wireI64:
 			if d.off+8 > len(d.data) {
@@ -91,7 +126,7 @@ func (d *disassembler) disassemble(out io.Writer, indent int, groupTag uint64, d
 			}
 			v := binary.LittleEndian.Uint64(d.data[d.off:])
 			d.off += 8
-			fmt.Fprintf(out, " 0x%016xi64\n", v)
+			fmt.Fprintf(out, "0x%016xi64\n", v)
 
 		case wireLen:
 			l, n := binary.Uvarint(d.data[d.off:])
@@ -105,13 +140,17 @@ func (d *disassembler) disassemble(out io.Writer, indent int, groupTag uint64, d
 			payload := d.data[d.off : d.off+int(l)]
 			d.off += int(l)
 
+			if d.opts.ExplicitLengthPrefixes {
+				fmt.Fprintf(out, "%d ", l)
+			}
+
 			// Heuristic: Prefer string if it's cleanly printable and not obviously a message.
 			switch {
 			case isPrintable(payload) && !isMessage(payload):
-				fmt.Fprintf(out, " %q\n", string(payload))
+				fmt.Fprintf(out, "{%q}\n", string(payload))
 			case isMessage(payload):
-				fmt.Fprint(out, " [\n")
-				sub := &disassembler{data: payload}
+				fmt.Fprint(out, "{\n")
+				sub := &disassembler{data: payload, opts: d.opts}
 				if err := sub.disassemble(out, indent+1, 0, depth+1); err != nil {
 					// If recursion fails, fall back to hex for this payload
 					fmt.Fprintf(out, " (fallback) `")
@@ -121,23 +160,27 @@ func (d *disassembler) disassemble(out io.Writer, indent int, groupTag uint64, d
 						}
 						fmt.Fprintf(out, "%02x", b)
 					}
-					fmt.Fprint(out, "`\n")
+					fmt.Fprint(out, "`")
 				}
 				fmt.Fprint(out, strings.Repeat("  ", indent))
-				fmt.Fprint(out, "]\n")
+				fmt.Fprint(out, "}\n")
 			default:
-				fmt.Fprintf(out, " `")
+				fmt.Fprintf(out, "{`")
 				for i, b := range payload {
 					if i > 0 {
 						fmt.Fprint(out, " ")
 					}
 					fmt.Fprintf(out, "%02x", b)
 				}
-				fmt.Fprint(out, "`\n")
+				fmt.Fprint(out, "`}\n")
 			}
 
 		case wireSGroup:
-			fmt.Fprint(out, " !{\n")
+			if d.opts.NoGroups {
+				fmt.Fprint(out, "\n")
+				continue
+			}
+			fmt.Fprint(out, "!{\n")
 			if err := d.disassemble(out, indent+1, tag, depth+1); err != nil {
 				return err
 			}
@@ -145,8 +188,12 @@ func (d *disassembler) disassemble(out io.Writer, indent int, groupTag uint64, d
 			fmt.Fprint(out, "}\n")
 
 		case wireEGroup:
+			if d.opts.NoGroups {
+				fmt.Fprint(out, "\n")
+				continue
+			}
 			// Should have been handled above if matching.
-			fmt.Fprintf(out, " (unmatched EGroup)\n")
+			fmt.Fprintf(out, "(unmatched EGroup)\n")
 
 		case wireI32:
 			if d.off+4 > len(d.data) {
@@ -154,10 +201,10 @@ func (d *disassembler) disassemble(out io.Writer, indent int, groupTag uint64, d
 			}
 			v := binary.LittleEndian.Uint32(d.data[d.off:])
 			d.off += 4
-			fmt.Fprintf(out, " 0x%08xi32\n", v)
+			fmt.Fprintf(out, "0x%08xi32\n", v)
 
 		default:
-			fmt.Fprintf(out, " (unsupported wire type %d)\n", wireType)
+			fmt.Fprintf(out, "(unsupported wire type %d)\n", wireType)
 		}
 	}
 	return nil
