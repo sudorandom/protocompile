@@ -1,13 +1,13 @@
 // Copyright 2020-2026 Buf Technologies, Inc.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Apache License, Version 2.0 (the \"License\");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
 //      http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
+// distributed under the License is distributed on an \"AS IS\" BASIS,
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
@@ -231,8 +231,6 @@ func isMessage(data []byte) bool {
 	if len(data) == 0 {
 		return false
 	}
-	// A message with only very high tags or very strange patterns might be a string.
-	// We'll require at least one valid-looking tag.
 	off := 0
 	fields := 0
 	for off < len(data) {
@@ -284,10 +282,13 @@ func isMessage(data []byte) bool {
 		}
 	}
 
-	// If it's a "message" but every field is just a single byte or it looks like text, reject it.
 	if fields > 0 && off == len(data) {
-		// Heuristic: if more than 80% of the bytes are printable ASCII, and it's long, it's likely a string.
-		if len(data) > 4 && isMostlyPrintable(data) {
+		// Heuristic: if it has many fields, it's likely a message even if it looks like a string.
+		if fields > 3 {
+			return true
+		}
+		// If it's short and mostly printable, it's likely a string.
+		if isMostlyPrintable(data) {
 			return false
 		}
 		return true
@@ -299,7 +300,6 @@ func isPrintable(data []byte) bool {
 	if len(data) == 0 {
 		return false
 	}
-	// Protobuf strings are UTF-8.
 	if !utf8.Valid(data) {
 		return false
 	}
