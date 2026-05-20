@@ -81,7 +81,7 @@ func lexNumber(l *lexer) token.Token {
 		token.MutateMeta[tokenmeta.Number](tok).Base = base
 	}
 
-	isFloat := taxa.IsFloatText(digits)
+	isFloat := taxa.IsFloatText(tok.Text())
 	expBase := 1
 	expIdx := -1
 	if isFloat {
@@ -187,6 +187,12 @@ func lexNumber(l *lexer) token.Token {
 		}
 
 		if err != nil {
+			goto fail
+		}
+
+		// Cap the exponent to prevent extremely large values from causing hangs in v.Int()
+		// or other operations. 1,000,000 is still quite large but manageable.
+		if v.IsInf() || v.IsNaN() || v.Exp() > 1000000 || v.Exp() < -1000000 {
 			goto fail
 		}
 

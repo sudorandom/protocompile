@@ -42,11 +42,13 @@ var lex = lexer.Lexer{
 	IsAffix: func(affix string, kind token.Kind, suffix bool) bool {
 		switch kind {
 		case token.Number:
-			return suffix && slicesx.Among(affix, "z", "i32", "i64", "f32", "f64")
+			res := suffix && slicesx.Among(affix, "z", "i32", "i64", "f32", "f64")
+			return res
 		default:
 			return false
 		}
 	},
+	AllowBacktickStrings: true,
 }
 
 // Parse lexes and parses a protoscope file.
@@ -128,7 +130,10 @@ func (p *parser) parseField(c *token.Cursor) ast.Field {
 	var wireType token.Token
 	// Optional wire type
 	if c.Peek().Kind() == token.Ident {
-		wireType = c.Next()
+		switch c.Peek().Text() {
+		case "VARINT", "I64", "LEN", "SGROUP", "EGROUP", "I32":
+			wireType = c.Next()
+		}
 	}
 
 	value := p.parseDecl(c)

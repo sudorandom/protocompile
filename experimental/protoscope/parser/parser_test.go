@@ -15,9 +15,13 @@
 package parser
 
 import (
+	"bytes"
 	"testing"
 
+	"github.com/bufbuild/protocompile/experimental/id"
+	"github.com/bufbuild/protocompile/experimental/protoscope/ast"
 	"github.com/bufbuild/protocompile/experimental/report"
+	"github.com/bufbuild/protocompile/experimental/seq"
 	"github.com/bufbuild/protocompile/experimental/source"
 )
 
@@ -30,6 +34,11 @@ func TestParse(t *testing.T) {
 		t.Fatalf("Parse failed: %v", r.Diagnostics)
 	}
 
+	for decl := range seq.Values(file.Decls()) {
+		span := decl.Span()
+		t.Logf("decl span: %v", span)
+	}
+
 	if file.Decls().Len() == 0 {
 		t.Errorf("expected at least one declaration, got 0")
 		t.Logf("token stream: %v", file.Stream())
@@ -38,5 +47,48 @@ func TestParse(t *testing.T) {
 			t.Logf("token: %v (%q)", c.Peek(), c.Peek().Text())
 			_ = c.Next()
 		}
+	}
+}
+
+func TestSliceReallocation(t *testing.T) {
+	var buf bytes.Buffer
+	for i := 1; i <= 1000; i++ {
+		buf.WriteString("1: 42\n")
+	}
+
+	src := source.NewFile("large.protoscope", buf.String())
+	r := &report.Report{}
+	file, ok := Parse("large.protoscope", src, r)
+	if !ok {
+		t.Fatalf("Parse failed: %v", r.Diagnostics)
+	}
+
+	count := 0
+	for decl := range seq.Values(file.Decls()) {
+		count++
+		field := id.Wrap(file, id.ID[ast.Field](decl.ID().Value()))
+		tag, _ := field.Tag().AsNumber().Int()
+		if tag != 1 {
+			t.Errorf("decl %d: expected tag 1, got %d", count, tag)
+		}
+
+		val := field.Value()
+		lit := id.Wrap(file, id.ID[ast.Literal](val.ID().Value()))
+		num, _ := lit.Token().AsNumber().Int()
+		if num != 42 {
+			t.Errorf("decl %d: expected value 42, got %d", count, num)
+		}
+	}
+	if count != 1000 {
+		t.Errorf("expected 1000 declarations, got %d", count)
+	}
+}
+
+func TestParseBackticks(t *testing.T) {
+	src := source.NewFile("test.protoscope", "1: {`01 02 03`}")
+	r := &report.Report{}
+	_, ok := Parse("test.protoscope", src, r)
+	if !ok {
+		t.Fatalf("Parse failed: %v", r.Diagnostics)
 	}
 }

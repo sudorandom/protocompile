@@ -16,6 +16,9 @@ package assembler
 
 import (
 	"encoding/binary"
+	"encoding/hex"
+	"strings"
+	"unicode"
 
 	"github.com/bufbuild/protocompile/experimental/id"
 	"github.com/bufbuild/protocompile/experimental/protoscope/ast"
@@ -28,7 +31,7 @@ import (
 func Assemble(file *ast.File) []byte {
 	a := &assembler{}
 	for decl := range seq.Values(file.Decls()) {
-		a.assembleDecl(decl)
+		a.assembleDecl(decl, false)
 	}
 	return a.buf
 }
@@ -37,21 +40,19 @@ type assembler struct {
 	buf []byte
 }
 
-func (a *assembler) assembleDecl(decl ast.DeclAny) {
+func (a *assembler) assembleDecl(decl ast.DeclAny, inBlock bool) {
 	switch decl.Kind() {
 	case ast.DeclKindField:
 		a.assembleField(id.Wrap(decl.Context(), id.ID[ast.Field](decl.ID().Value())))
 	case ast.DeclKindLiteral:
-		a.assembleLiteral(id.Wrap(decl.Context(), id.ID[ast.Literal](decl.ID().Value())))
+		a.assembleLiteral(id.Wrap(decl.Context(), id.ID[ast.Literal](decl.ID().Value())), inBlock)
 	case ast.DeclKindBlock:
-		a.assembleBlock(id.Wrap(decl.Context(), id.ID[ast.Block](decl.ID().Value())))
+		a.assembleBlock(id.Wrap(decl.Context(), id.ID[ast.Block](decl.ID().Value())), inBlock)
 	}
 }
 
 func (a *assembler) assembleField(f ast.Field) {
 	tag, _ := f.Tag().AsNumber().Int()
-
-	// Heuristic for wire type if not specified.
 	wireType := uint64(0)
 	val := f.Value()
 	if !val.IsZero() {
@@ -67,6 +68,14 @@ func (a *assembler) assembleField(f ast.Field) {
 			lit := id.Wrap(val.Context(), id.ID[ast.Literal](val.ID().Value()))
 			if lit.Token().Kind() == token.String {
 				wireType = 2 // LEN
+			} else if lit.Token().Kind() == token.Number {
+				suffix := lit.Token().AsNumber().Suffix().Text()
+				switch suffix {
+				case "i64":
+					wireType = 1 // I64
+				case "i32":
+					wireType = 5 // I32
+				}
 			}
 		}
 	}
@@ -94,7 +103,7 @@ func (a *assembler) assembleField(f ast.Field) {
 	}
 
 	if wireType == 3 { // SGROUP
-		a.assembleDecl(val)
+		a.assembleDecl(val, false)
 		a.writeVarint(tag<<3 | 4) // Emit matching EGROUP
 		return
 	}
@@ -114,21 +123,30 @@ func (a *assembler) assembleField(f ast.Field) {
 		}
 
 		if isSelfDelimited {
-			a.assembleDecl(val)
+			a.assembleDecl(val, false)
 		} else {
 			sub := &assembler{}
-			sub.assembleDecl(val)
+			sub.assembleDecl(val, false)
 			a.writeVarint(uint64(len(sub.buf)))
 			a.buf = append(a.buf, sub.buf...)
 		}
 		return
 	}
 
-	a.assembleDecl(val)
+	a.assembleDecl(val, false)
 }
 
-func (a *assembler) assembleLiteral(l ast.Literal) {
+func (a *assembler) assembleLiteral(l ast.Literal, inBlock bool) {
 	tok := l.Token()
+	switch tok.Keyword() {
+	case keyword.True:
+		a.writeVarint(1)
+		return
+	case keyword.False:
+		a.writeVarint(0)
+		return
+	}
+
 	switch tok.Kind() {
 	case token.Number:
 		// Check for suffix hints
@@ -155,27 +173,51 @@ func (a *assembler) assembleLiteral(l ast.Literal) {
 			a.writeVarint(v)
 		}
 	case token.String:
-		s := tok.AsString().Text()
-		a.writeVarint(uint64(len(s)))
-		a.buf = append(a.buf, s...)
+		open, _ := tok.AsString().Quotes()
+		isHex := open.Text() == "`"
+		var contentBytes []byte
+		if isHex {
+			// Decode hex string
+			var sb strings.Builder
+			for _, r := range tok.AsString().Text() {
+				if !unicode.IsSpace(r) {
+					sb.WriteRune(r)
+				}
+			}
+			var err error
+			contentBytes, err = hex.DecodeString(sb.String())
+			if err != nil {
+				// Fallback to raw string text if decoding fails
+				contentBytes = []byte(tok.AsString().Text())
+			}
+		} else {
+			contentBytes = []byte(tok.AsString().Text())
+		}
+
+		if inBlock {
+			a.buf = append(a.buf, contentBytes...)
+		} else {
+			a.writeVarint(uint64(len(contentBytes)))
+			a.buf = append(a.buf, contentBytes...)
+		}
 	}
 }
 
-func (a *assembler) assembleBlock(b ast.Block) {
+func (a *assembler) assembleBlock(b ast.Block, inBlock bool) {
 	tok := b.Token()
 	switch tok.Keyword() {
 	case keyword.LBracket, keyword.Brackets, keyword.LBrace, keyword.Braces:
 		// Length-prefixed block
 		sub := &assembler{}
 		for decl := range seq.Values(b.Decls()) {
-			sub.assembleDecl(decl)
+			sub.assembleDecl(decl, true)
 		}
 		a.writeVarint(uint64(len(sub.buf)))
 		a.buf = append(a.buf, sub.buf...)
 	case keyword.Bang:
 		// Group content (no length prefix)
 		for decl := range seq.Values(b.Decls()) {
-			a.assembleDecl(decl)
+			a.assembleDecl(decl, false)
 		}
 	}
 }

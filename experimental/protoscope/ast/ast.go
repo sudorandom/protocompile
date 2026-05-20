@@ -15,12 +15,11 @@
 package ast
 
 import (
-	"unsafe"
-
 	"github.com/bufbuild/protocompile/experimental/id"
 	"github.com/bufbuild/protocompile/experimental/seq"
 	"github.com/bufbuild/protocompile/experimental/source"
 	"github.com/bufbuild/protocompile/experimental/token"
+	"github.com/bufbuild/protocompile/internal/arena"
 )
 
 var _ id.Context = (*File)(nil)
@@ -52,20 +51,11 @@ func New(path string, stream *token.Stream) *File {
 func (f *File) FromID(id uint64, want any) any {
 	switch want.(type) {
 	case **rawField:
-		if uint32(id) == 0 || uint32(id) > uint32(len(f.nodes.fields)) {
-			return nil
-		}
-		return &f.nodes.fields[uint32(id)-1]
+		return f.nodes.fields.Deref(arena.Pointer[rawField](id))
 	case **rawLiteral:
-		if uint32(id) == 0 || uint32(id) > uint32(len(f.nodes.literals)) {
-			return nil
-		}
-		return &f.nodes.literals[uint32(id)-1]
+		return f.nodes.literals.Deref(arena.Pointer[rawLiteral](id))
 	case **rawBlock:
-		if uint32(id) == 0 || uint32(id) > uint32(len(f.nodes.blocks)) {
-			return nil
-		}
-		return &f.nodes.blocks[uint32(id)-1]
+		return f.nodes.blocks.Deref(arena.Pointer[rawBlock](id))
 	default:
 		return nil
 	}
@@ -94,14 +84,38 @@ func (f *File) Decls() seq.Inserter[DeclAny] {
 // DeclAny represents any protoscope declaration.
 type DeclAny id.DynNode[DeclAny, DeclKind, *File]
 
+// AsField converts a DeclAny into a Field, if that is the declaration it contains.
+func (d DeclAny) AsField() Field {
+	if d.Kind() != DeclKindField {
+		return Field{}
+	}
+	return id.Wrap(d.Context(), id.ID[Field](d.ID().Value()))
+}
+
+// AsLiteral converts a DeclAny into a Literal, if that is the declaration it contains.
+func (d DeclAny) AsLiteral() Literal {
+	if d.Kind() != DeclKindLiteral {
+		return Literal{}
+	}
+	return id.Wrap(d.Context(), id.ID[Literal](d.ID().Value()))
+}
+
+// AsBlock converts a DeclAny into a Block, if that is the declaration it contains.
+func (d DeclAny) AsBlock() Block {
+	if d.Kind() != DeclKindBlock {
+		return Block{}
+	}
+	return id.Wrap(d.Context(), id.ID[Block](d.ID().Value()))
+}
+
 func (d DeclAny) Span() source.Span {
 	switch d.Kind() {
 	case DeclKindField:
-		return (*Field)(unsafe.Pointer(&d)).Span()
+		return d.AsField().Span()
 	case DeclKindLiteral:
-		return (*Literal)(unsafe.Pointer(&d)).Span()
+		return d.AsLiteral().Span()
 	case DeclKindBlock:
-		return (*Block)(unsafe.Pointer(&d)).Span()
+		return d.AsBlock().Span()
 	default:
 		return source.Span{}
 	}
@@ -129,38 +143,35 @@ func (k DeclKind) EncodeDynID(value int32) (lo, hi int32, ok bool) {
 type Nodes struct {
 	file *File
 
-	fields   []rawField
-	literals []rawLiteral
-	blocks   []rawBlock
+	fields   arena.Arena[rawField]
+	literals arena.Arena[rawLiteral]
+	blocks   arena.Arena[rawBlock]
 }
 
 // NewField creates a new Field node.
 func (n *Nodes) NewField(args FieldArgs) Field {
-	idField := id.ID[Field](len(n.fields) + 1)
-	n.fields = append(n.fields, rawField{
+	idField := n.fields.NewCompressed(rawField{
 		tag:      args.Tag.ID(),
 		wireType: args.WireType.ID(),
 		value:    args.Value.ID(),
 	})
-	return id.Wrap(n.file, idField)
+	return id.Wrap(n.file, id.ID[Field](idField))
 }
 
 // NewLiteral creates a new Literal node.
 func (n *Nodes) NewLiteral(t token.Token) Literal {
-	idLiteral := id.ID[Literal](len(n.literals) + 1)
-	n.literals = append(n.literals, rawLiteral{
+	idLiteral := n.literals.NewCompressed(rawLiteral{
 		token: t.ID(),
 	})
-	return id.Wrap(n.file, idLiteral)
+	return id.Wrap(n.file, id.ID[Literal](idLiteral))
 }
 
 // NewBlock creates a new Block node.
 func (n *Nodes) NewBlock(t token.Token) Block {
-	idBlock := id.ID[Block](len(n.blocks) + 1)
-	n.blocks = append(n.blocks, rawBlock{
+	idBlock := n.blocks.NewCompressed(rawBlock{
 		token: t.ID(),
 	})
-	return id.Wrap(n.file, idBlock)
+	return id.Wrap(n.file, id.ID[Block](idBlock))
 }
 
 // Field represents a tag expression: `Tag:WireType Value` or `Tag: Value`.

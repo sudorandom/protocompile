@@ -187,7 +187,7 @@ func loop(l *lexer) {
 		r := l.pop()
 
 		switch {
-		case r == '"', r == '\'':
+		case r == '"', r == '\'', (r == '`' && l.AllowBacktickStrings):
 			l.cursor-- // Back up to behind the quote before resuming.
 			lexString(l, "")
 
