@@ -76,9 +76,7 @@ func (d *disassembler) disassemble(out io.Writer, indent int, groupTag uint64, d
 
 		// If we're in a group and see an EGroup with the same tag, we're done.
 		if groupTag != 0 && wireType == wireEGroup && tag == groupTag {
-			if d.opts.NoGroups {
-				// Continue, don't return.
-			} else {
+			if !d.opts.NoGroups {
 				d.off += n
 				return nil
 			}

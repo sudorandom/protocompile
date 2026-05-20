@@ -203,7 +203,7 @@ func (a *assembler) assembleLiteral(l ast.Literal, inBlock bool) {
 	}
 }
 
-func (a *assembler) assembleBlock(b ast.Block, inBlock bool) {
+func (a *assembler) assembleBlock(b ast.Block, _ bool) {
 	tok := b.Token()
 	switch tok.Keyword() {
 	case keyword.LBracket, keyword.Brackets, keyword.LBrace, keyword.Braces:

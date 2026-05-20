@@ -194,7 +194,7 @@ func loop(l *lexer) {
 		case l.NumberCanStartWithDot && r == '.', unicode.IsDigit(r):
 			// Back up behind the rune we just popped.
 			l.cursor -= utf8.RuneLen(r)
-			lexNumber(l)
+			_ = lexNumber(l)
 
 		case unicodex.IsXIDStart(r):
 			// Back up behind the rune we just popped.
