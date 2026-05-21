@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package test;
 
-option go_package = "github.com/bufbuild/protocompile/experimental/protoscope/testdata/alltypes";
+option go_package = "github.com/bufbuild/protocompile/experimental/internal/protoscope/testdata/alltypes";
 
 message AllTypes {
   double f_double = 1;

@@ -16,7 +16,7 @@ package parser
 
 import (
 	"github.com/bufbuild/protocompile/experimental/internal/lexer"
-	"github.com/bufbuild/protocompile/experimental/protoscope/ast"
+	"github.com/bufbuild/protocompile/experimental/internal/protoscope/ast"
 	"github.com/bufbuild/protocompile/experimental/report"
 	"github.com/bufbuild/protocompile/experimental/seq"
 	"github.com/bufbuild/protocompile/experimental/source"

@@ -21,7 +21,7 @@ import (
 	"unicode"
 
 	"github.com/bufbuild/protocompile/experimental/id"
-	"github.com/bufbuild/protocompile/experimental/protoscope/ast"
+	"github.com/bufbuild/protocompile/experimental/internal/protoscope/ast"
 	"github.com/bufbuild/protocompile/experimental/seq"
 	"github.com/bufbuild/protocompile/experimental/token"
 	"github.com/bufbuild/protocompile/experimental/token/keyword"

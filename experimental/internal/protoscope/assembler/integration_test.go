@@ -27,8 +27,8 @@ import (
 	"google.golang.org/protobuf/types/dynamicpb"
 
 	"github.com/bufbuild/protocompile"
-	"github.com/bufbuild/protocompile/experimental/protoscope/disassembler"
-	"github.com/bufbuild/protocompile/experimental/protoscope/parser"
+	"github.com/bufbuild/protocompile/experimental/internal/protoscope/disassembler"
+	"github.com/bufbuild/protocompile/experimental/internal/protoscope/parser"
 	"github.com/bufbuild/protocompile/experimental/report"
 	"github.com/bufbuild/protocompile/experimental/source"
 )

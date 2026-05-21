@@ -2,7 +2,7 @@ syntax = "proto2";
 
 package test;
 
-option go_package = "github.com/bufbuild/protocompile/experimental/protoscope/testdata/alltypesproto2";
+option go_package = "github.com/bufbuild/protocompile/experimental/internal/protoscope/testdata/alltypesproto2";
 
 message AllTypesProto2 {
   repeated group OptionalGroup = 1 {

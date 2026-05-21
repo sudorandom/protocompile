@@ -62,9 +62,9 @@ test: $(PROTOC) ## Run unit tests
 
 .PHONY: fuzz
 fuzz: $(PROTOC) ## Run fuzz tests
-	$(GO) test -v -fuzz=FuzzRoundTrip -fuzztime=30s ./experimental/protoscope/assembler
-	$(GO) test -v -fuzz=FuzzParse -fuzztime=30s ./experimental/protoscope/parser
-	$(GO) test -v -fuzz=FuzzDisassemble -fuzztime=30s ./experimental/protoscope/disassembler
+	$(GO) test -v -fuzz=FuzzRoundTrip -fuzztime=30s ./experimental/internal/protoscope/assembler
+	$(GO) test -v -fuzz=FuzzParse -fuzztime=30s ./experimental/internal/protoscope/parser
+	$(GO) test -v -fuzz=FuzzDisassemble -fuzztime=30s ./experimental/internal/protoscope/disassembler
 
 .PHONY: benchmarks
 benchmarks: $(PROTOC) ## Run benchmarks
