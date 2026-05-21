@@ -16,15 +16,52 @@ package disassembler
 
 import (
 	"io"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
 func FuzzDisassemble(f *testing.F) {
-	f.Add([]byte{0x08, 0x96, 0x01})             // simple varint
-	f.Add([]byte{0x0a, 0x03, 0x01, 0x02, 0x03}) // packed
-	f.Add([]byte{0x0b, 0x10, 0x03, 0x0c})       // group
+	// Add baseline corpus with option permutations
+	baselineSeeds := [][]byte{
+		{0x08, 0x96, 0x01},             // simple varint
+		{0x0a, 0x03, 0x01, 0x02, 0x03}, // packed
+		{0x0b, 0x10, 0x03, 0x0c},       // group
+	}
+	for _, seed := range baselineSeeds {
+		for _, explicitWireTypes := range []bool{false, true} {
+			for _, explicitLengthPrefixes := range []bool{false, true} {
+				for _, noGroups := range []bool{false, true} {
+					f.Add(seed, explicitWireTypes, explicitLengthPrefixes, noGroups)
+				}
+			}
+		}
+	}
 
-	f.Fuzz(func(_ *testing.T, data []byte) {
-		_ = Disassemble(data, io.Discard)
+	// Dynamically find and load complex .pb files from testdata directory
+	files, err := filepath.Glob("../testdata/*.pb")
+	if err == nil {
+		for _, file := range files {
+			data, err := os.ReadFile(file)
+			if err != nil {
+				continue
+			}
+			for _, explicitWireTypes := range []bool{false, true} {
+				for _, explicitLengthPrefixes := range []bool{false, true} {
+					for _, noGroups := range []bool{false, true} {
+						f.Add(data, explicitWireTypes, explicitLengthPrefixes, noGroups)
+					}
+				}
+			}
+		}
+	}
+
+	f.Fuzz(func(_ *testing.T, data []byte, explicitWireTypes, explicitLengthPrefixes, noGroups bool) {
+		opts := Options{
+			ExplicitWireTypes:      explicitWireTypes,
+			ExplicitLengthPrefixes: explicitLengthPrefixes,
+			NoGroups:               noGroups,
+		}
+		_ = DisassembleWithOptions(data, io.Discard, opts)
 	})
 }
