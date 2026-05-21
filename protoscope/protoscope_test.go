@@ -36,6 +36,26 @@ func TestAssembleAndDisassemble(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, text, "1: 150")
 	assert.Contains(t, text, `2: {`+"`"+`0a 05 68 65 6c 6c 6f`+"`"+`}`)
+
+	// Test MaxDepth
+	nestedInput := `1: {
+  2: {
+    3: 150
+  }
+}
+`
+	nestedBinary, nestedDiags := Assemble("nested.protoscope", []byte(nestedInput))
+	require.Empty(t, nestedDiags)
+	require.NotEmpty(t, nestedBinary)
+
+	// Disassembling with default options should work
+	_, err = Disassemble(nestedBinary, DisassembleOptions{})
+	require.NoError(t, err)
+
+	// Disassembling with MaxDepth = 1 should fail
+	_, err = Disassemble(nestedBinary, DisassembleOptions{MaxDepth: 1})
+	require.Error(t, err)
+	assert.Equal(t, "max depth exceeded", err.Error())
 }
 
 func TestDiagnostics(t *testing.T) {

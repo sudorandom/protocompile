@@ -1,13 +1,13 @@
 // Copyright 2020-2026 Buf Technologies, Inc.
 //
-// Licensed under the Apache License, Version 2.0 (the \"License\");
+// Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
 //      http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an \"AS IS\" BASIS,
+// distributed under the License is distributed on an "AS IS" BASIS,
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
@@ -33,6 +33,7 @@ type Options struct {
 	ExplicitWireTypes      bool
 	ExplicitLengthPrefixes bool
 	NoGroups               bool
+	MaxDepth               int
 }
 
 // Disassemble translates Protobuf wire format into protoscope text.
@@ -60,11 +61,24 @@ const (
 	wireEGroup = 4
 	wireI32    = 5
 
-	maxDepth = 10
+	defaultMaxDepth = 10
 )
 
+var wireTypeNames = [...]string{
+	wireVarint: "VARINT ",
+	wireI64:    "I64 ",
+	wireLen:    "LEN ",
+	wireSGroup: "SGROUP ",
+	wireEGroup: "EGROUP ",
+	wireI32:    "I32 ",
+}
+
 func (d *disassembler) disassemble(out io.Writer, indent int, groupTag uint64, depth int) error {
-	if depth > maxDepth {
+	limit := d.opts.MaxDepth
+	if limit <= 0 {
+		limit = defaultMaxDepth
+	}
+	if depth > limit {
 		return errors.New("max depth exceeded")
 	}
 
@@ -94,20 +108,7 @@ func (d *disassembler) disassemble(out io.Writer, indent int, groupTag uint64, d
 		fmt.Fprint(out, strings.Repeat("  ", indent))
 		fmt.Fprintf(out, "%d:", tag)
 		if d.opts.ExplicitWireTypes {
-			switch wireType {
-			case wireVarint:
-				fmt.Fprint(out, "VARINT ")
-			case wireI64:
-				fmt.Fprint(out, "I64 ")
-			case wireLen:
-				fmt.Fprint(out, "LEN ")
-			case wireSGroup:
-				fmt.Fprint(out, "SGROUP ")
-			case wireEGroup:
-				fmt.Fprint(out, "EGROUP ")
-			case wireI32:
-				fmt.Fprint(out, "I32 ")
-			}
+			fmt.Fprint(out, wireTypeNames[wireType])
 		} else {
 			fmt.Fprint(out, " ")
 		}
@@ -154,27 +155,16 @@ func (d *disassembler) disassemble(out io.Writer, indent int, groupTag uint64, d
 				fmt.Fprint(out, "{\n")
 				sub := &disassembler{data: payload, opts: d.opts}
 				if err := sub.disassemble(out, indent+1, 0, depth+1); err != nil {
-					// If recursion fails, fall back to hex for this payload
-					fmt.Fprintf(out, " (fallback) `")
-					for i, b := range payload {
-						if i > 0 {
-							fmt.Fprint(out, " ")
-						}
-						fmt.Fprintf(out, "%02x", b)
+					if err.Error() == "max depth exceeded" {
+						return err
 					}
-					fmt.Fprint(out, "`")
+					// If recursion fails, fall back to hex for this payload
+					fmt.Fprintf(out, " (fallback) `%s`", toHexSpace(payload))
 				}
 				fmt.Fprint(out, strings.Repeat("  ", indent))
 				fmt.Fprint(out, "}\n")
 			default:
-				fmt.Fprintf(out, "{`")
-				for i, b := range payload {
-					if i > 0 {
-						fmt.Fprint(out, " ")
-					}
-					fmt.Fprintf(out, "%02x", b)
-				}
-				fmt.Fprint(out, "`}\n")
+				fmt.Fprintf(out, "{`%s`}\n", toHexSpace(payload))
 			}
 
 		case wireSGroup:
@@ -217,85 +207,84 @@ func (d *disassembler) dumpHex(out io.Writer, indent int) error {
 		return nil
 	}
 	fmt.Fprint(out, strings.Repeat("  ", indent))
-	fmt.Fprint(out, "`")
-	for i, b := range d.data[d.off:] {
-		if i > 0 {
-			fmt.Fprint(out, " ")
-		}
-		fmt.Fprintf(out, "%02x", b)
-	}
-	fmt.Fprint(out, "`\n")
+	fmt.Fprintf(out, "`%s`\n", toHexSpace(d.data[d.off:]))
 	d.off = len(d.data)
 	return nil
 }
 
-func isMessage(data []byte) bool {
+func checkMessageStructure(data []byte) (ok bool, fields int) {
 	if len(data) == 0 {
-		return false
+		return false, 0
 	}
 	off := 0
-	fields := 0
 	for off < len(data) {
 		u, n := binary.Uvarint(data[off:])
 		if n <= 0 {
-			return false
+			return false, 0
 		}
 		off += n
 		wireType := u & 0x7
 		tag := u >> 3
 		if wireType > 5 || tag == 0 {
-			return false
+			return false, 0
 		}
 		fields++
 		switch wireType {
 		case wireVarint:
 			_, n = binary.Uvarint(data[off:])
 			if n <= 0 {
-				return false
+				return false, 0
 			}
 			off += n
 		case wireI64:
 			if off+8 > len(data) {
-				return false
+				return false, 0
 			}
 			off += 8
 		case wireLen:
 			l, n := binary.Uvarint(data[off:])
 			if n <= 0 {
-				return false
+				return false, 0
 			}
 			off += n
 			if l > uint64(len(data)-off) {
-				return false
+				return false, 0
 			}
 			off += int(l)
-		case wireSGroup:
-			// Simple check: groups must be finite
-			return false
-		case wireEGroup:
-			return false
+		case wireSGroup, wireEGroup:
+			// Groups are not supported for simple structural check here
+			return false, 0
 		case wireI32:
 			if off+4 > len(data) {
-				return false
+				return false, 0
 			}
 			off += 4
 		default:
-			return false
+			return false, 0
 		}
 	}
+	return off == len(data), fields
+}
 
-	if fields > 0 && off == len(data) {
-		// Heuristic: if it has many fields, it's likely a message even if it looks like a string.
-		if fields > 3 {
-			return true
-		}
-		// If it's short and mostly printable, it's likely a string.
-		if isMostlyPrintable(data) {
-			return false
-		}
+func isStructMessage(data []byte) bool {
+	ok, fields := checkMessageStructure(data)
+	return ok && fields > 0
+}
+
+func isMessage(data []byte) bool {
+	ok, fields := checkMessageStructure(data)
+	if !ok || fields == 0 {
+		return false
+	}
+	// Heuristic: if it has many fields, it's likely a message even if it looks like a string.
+	if fields > 3 {
 		return true
 	}
-	return false
+	// If it's short and mostly printable, it's likely a string.
+	if isMostlyPrintable(data) {
+		return false
+	}
+	return true
 }
 
 func isPrintable(data []byte) bool {
@@ -305,8 +294,8 @@ func isPrintable(data []byte) bool {
 	if !utf8.Valid(data) {
 		return false
 	}
-	for _, b := range data {
-		if !unicode.IsPrint(rune(b)) && !unicode.IsSpace(rune(b)) {
+	for _, r := range string(data) {
+		if !unicode.IsPrint(r) && !unicode.IsSpace(r) {
 			return false
 		}
 	}
@@ -314,13 +303,48 @@ func isPrintable(data []byte) bool {
 }
 
 func isMostlyPrintable(data []byte) bool {
+	if len(data) == 0 {
+		return false
+	}
+	if !utf8.Valid(data) {
+		return false
+	}
 	printable := 0
-	for _, b := range data {
-		if unicode.IsPrint(rune(b)) || unicode.IsSpace(rune(b)) {
+	total := 0
+	for _, r := range string(data) {
+		total++
+		if unicode.IsPrint(r) || unicode.IsSpace(r) {
 			printable++
 		}
 	}
-	return printable*10 > len(data)*8 // > 80%
+	if total == 0 {
+		return false
+	}
+	return printable*10 > total*8
+}
+
+func toHexSpace(data []byte) string {
+	var sb strings.Builder
+	for i, b := range data {
+		if i > 0 {
+			sb.WriteByte(' ')
+		}
+		fmt.Fprintf(&sb, "%02x", b)
+	}
+	return sb.String()
+}
+
+func formatSingleLine(text string) string {
+	text = strings.TrimSpace(text)
+	lines := strings.Split(text, "\n")
+	var cleaned []string
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			cleaned = append(cleaned, line)
+		}
+	}
+	return "{ " + strings.Join(cleaned, " ") + " }"
 }
 
 // Representation represents a possible translation/formatting of a protobuf value.
@@ -338,338 +362,13 @@ func Possibilities(wireType int, payload []byte) []Representation {
 
 	switch wireType {
 	case wireVarint:
-		val, n := binary.Uvarint(payload)
-		if n <= 0 || n < len(payload) {
-			return nil
-		}
-
-		// 1. Unsigned Varint (Decimal)
-		reps = append(reps, Representation{
-			Type:        "varint",
-			Text:        strconv.FormatUint(val, 10),
-			Description: "Varint",
-			Likelihood:  0.9,
-		})
-
-		// 2. Zigzag Varint
-		zz := int64(val>>1) ^ -int64(val&1)
-		reps = append(reps, Representation{
-			Type:        "zigzag",
-			Text:        strconv.FormatInt(zz, 10),
-			Description: "Zigzag Varint",
-			Likelihood:  0.7,
-		})
-
-		// 3. Boolean
-		if val == 0 {
-			reps = append(reps, Representation{
-				Type:        "bool",
-				Text:        "false",
-				Description: "Boolean",
-				Likelihood:  0.8,
-			})
-		} else if val == 1 {
-			reps = append(reps, Representation{
-				Type:        "bool",
-				Text:        "true",
-				Description: "Boolean",
-				Likelihood:  0.8,
-			})
-		}
-
+		reps = possibilitiesVarint(payload)
 	case wireI32:
-		if len(payload) != 4 {
-			return nil
-		}
-		val := binary.LittleEndian.Uint32(payload)
-
-		// 1. Fixed32 (Hex)
-		reps = append(reps, Representation{
-			Type:        "fixed32",
-			Text:        fmt.Sprintf("0x%08xi32", val),
-			Description: "Fixed32 (Hex)",
-			Likelihood:  0.9,
-		})
-
-		// 2. Fixed32 (Decimal)
-		reps = append(reps, Representation{
-			Type:        "fixed32",
-			Text:        fmt.Sprintf("%di32", int32(val)),
-			Description: "Fixed32 (Decimal)",
-			Likelihood:  0.8,
-		})
-
-		// 3. Float32
-		fval := math.Float32frombits(val)
-		f64 := float64(fval)
-		text := fmt.Sprintf("%gf32", fval)
-		if !strings.Contains(text, ".") && !strings.Contains(text, "e") && !math.IsNaN(f64) && !math.IsInf(f64, 0) {
-			text = fmt.Sprintf("%.1ff32", fval)
-		}
-		var likelihood float64
-		switch {
-		case math.IsNaN(f64) || math.IsInf(f64, 0):
-			likelihood = 0.2
-		case fval == 0.0 || (math.Abs(f64) > 1e-6 && math.Abs(f64) < 1e6):
-			likelihood = 0.7
-		default:
-			likelihood = 0.5
-		}
-		reps = append(reps, Representation{
-			Type:        "float32",
-			Text:        text,
-			Description: "Float32",
-			Likelihood:  likelihood,
-		})
-
+		reps = possibilitiesI32(payload)
 	case wireI64:
-		if len(payload) != 8 {
-			return nil
-		}
-		val := binary.LittleEndian.Uint64(payload)
-
-		// 1. Fixed64 (Hex)
-		reps = append(reps, Representation{
-			Type:        "fixed64",
-			Text:        fmt.Sprintf("0x%016xi64", val),
-			Description: "Fixed64 (Hex)",
-			Likelihood:  0.9,
-		})
-
-		// 2. Fixed64 (Decimal)
-		reps = append(reps, Representation{
-			Type:        "fixed64",
-			Text:        fmt.Sprintf("%di64", int64(val)),
-			Description: "Fixed64 (Decimal)",
-			Likelihood:  0.8,
-		})
-
-		// 3. Float64
-		fval := math.Float64frombits(val)
-		text := fmt.Sprintf("%gf64", fval)
-		if !strings.Contains(text, ".") && !strings.Contains(text, "e") && !math.IsNaN(fval) && !math.IsInf(fval, 0) {
-			text = fmt.Sprintf("%.1ff64", fval)
-		}
-		var likelihood float64
-		switch {
-		case math.IsNaN(fval) || math.IsInf(fval, 0):
-			likelihood = 0.2
-		case fval == 0.0 || (math.Abs(fval) > 1e-6 && math.Abs(fval) < 1e6):
-			likelihood = 0.7
-		default:
-			likelihood = 0.5
-		}
-		reps = append(reps, Representation{
-			Type:        "float64",
-			Text:        text,
-			Description: "Float64",
-			Likelihood:  likelihood,
-		})
-
+		reps = possibilitiesI64(payload)
 	case wireLen:
-		// 1. Fallback Hex Bytes (always valid)
-		var hexSb strings.Builder
-		hexSb.WriteString("{`")
-		for i, b := range payload {
-			if i > 0 {
-				hexSb.WriteByte(' ')
-			}
-			fmt.Fprintf(&hexSb, "%02x", b)
-		}
-		hexSb.WriteString("`}")
-		reps = append(reps, Representation{
-			Type:        "bytes",
-			Text:        hexSb.String(),
-			Description: "Bytes",
-			Likelihood:  0.1,
-		})
-
-		// 2. String
-		if utf8.Valid(payload) {
-			isMsg := isMessage(payload)
-			likelihood := 0.4
-			if isPrintable(payload) {
-				if !isMsg {
-					likelihood = 0.9
-				} else {
-					likelihood = 0.6
-				}
-			}
-			reps = append(reps, Representation{
-				Type:        "string",
-				Text:        fmt.Sprintf("{%q}", string(payload)),
-				Description: "String",
-				Likelihood:  likelihood,
-			})
-		}
-
-		// 3. Message
-		// Check structural validity as message
-		isStructMessage := false
-		if len(payload) > 0 {
-			off := 0
-			fields := 0
-			ok := true
-			for off < len(payload) {
-				u, n := binary.Uvarint(payload[off:])
-				if n <= 0 {
-					ok = false
-					break
-				}
-				off += n
-				wType := u & 0x7
-				tag := u >> 3
-				if wType > 5 || tag == 0 {
-					ok = false
-					break
-				}
-				fields++
-				switch wType {
-				case wireVarint:
-					_, n = binary.Uvarint(payload[off:])
-					if n <= 0 {
-						ok = false
-						break
-					}
-					off += n
-				case wireI64:
-					if off+8 > len(payload) {
-						ok = false
-						break
-					}
-					off += 8
-				case wireLen:
-					l, n := binary.Uvarint(payload[off:])
-					if n <= 0 {
-						ok = false
-						break
-					}
-					off += n
-					if l > uint64(len(payload)-off) {
-						ok = false
-						break
-					}
-					off += int(l)
-				case wireSGroup:
-					ok = false // groups not supported for simple structural check here
-				case wireEGroup:
-					ok = false
-				case wireI32:
-					if off+4 > len(payload) {
-						ok = false
-						break
-					}
-					off += 4
-				default:
-					ok = false
-				}
-				if !ok {
-					break
-				}
-			}
-			isStructMessage = ok && fields > 0 && off == len(payload)
-		}
-
-		if isStructMessage {
-			var buf bytes.Buffer
-			if err := Disassemble(payload, &buf); err == nil {
-				text := strings.TrimSpace(buf.String())
-				lines := strings.Split(text, "\n")
-				var cleaned []string
-				for _, line := range lines {
-					line = strings.TrimSpace(line)
-					if line != "" {
-						cleaned = append(cleaned, line)
-					}
-				}
-				text = "{ " + strings.Join(cleaned, " ") + " }"
-				likelihood := 0.6
-				if isMessage(payload) {
-					likelihood = 0.9
-				}
-				reps = append(reps, Representation{
-					Type:        "message",
-					Text:        text,
-					Description: "Embedded Message",
-					Likelihood:  likelihood,
-				})
-			}
-		}
-
-		// 4. Packed Varints
-		if len(payload) > 0 {
-			var ints []uint64
-			off := 0
-			ok := true
-			for off < len(payload) {
-				v, n := binary.Uvarint(payload[off:])
-				if n <= 0 {
-					ok = false
-					break
-				}
-				off += n
-				ints = append(ints, v)
-			}
-			if ok && len(ints) > 0 {
-				var sb strings.Builder
-				sb.WriteString("[")
-				for _, val := range ints {
-					fmt.Fprintf(&sb, " %d", val)
-				}
-				sb.WriteString(" ]")
-				allSmall := true
-				for _, val := range ints {
-					if val > 1000 {
-						allSmall = false
-						break
-					}
-				}
-				likelihood := 0.3
-				if allSmall {
-					likelihood = 0.5
-				}
-				reps = append(reps, Representation{
-					Type:        "packed_varint",
-					Text:        sb.String(),
-					Description: "Packed Varints",
-					Likelihood:  likelihood,
-				})
-			}
-		}
-
-		// 5. Packed Fixed32
-		if len(payload) > 0 && len(payload)%4 == 0 {
-			var sb strings.Builder
-			sb.WriteString("[")
-			for i := 0; i < len(payload); i += 4 {
-				v := binary.LittleEndian.Uint32(payload[i:])
-				fmt.Fprintf(&sb, " 0x%08xi32", v)
-			}
-			sb.WriteString(" ]")
-			reps = append(reps, Representation{
-				Type:        "packed_fixed32",
-				Text:        sb.String(),
-				Description: "Packed Fixed32",
-				Likelihood:  0.4,
-			})
-		}
-
-		// 6. Packed Fixed64
-		if len(payload) > 0 && len(payload)%8 == 0 {
-			var sb strings.Builder
-			sb.WriteString("[")
-			for i := 0; i < len(payload); i += 8 {
-				v := binary.LittleEndian.Uint64(payload[i:])
-				fmt.Fprintf(&sb, " 0x%016xi64", v)
-			}
-			sb.WriteString(" ]")
-			reps = append(reps, Representation{
-				Type:        "packed_fixed64",
-				Text:        sb.String(),
-				Description: "Packed Fixed64",
-				Likelihood:  0.4,
-			})
-		}
+		reps = possibilitiesLen(payload)
 	}
 
 	sort.Slice(reps, func(i, j int) bool {
@@ -678,6 +377,277 @@ func Possibilities(wireType int, payload []byte) []Representation {
 		}
 		return reps[i].Likelihood > reps[j].Likelihood
 	})
+
+	return reps
+}
+
+func possibilitiesVarint(payload []byte) []Representation {
+	val, n := binary.Uvarint(payload)
+	if n <= 0 || n < len(payload) {
+		return nil
+	}
+
+	var reps []Representation
+
+	// 1. Unsigned Varint (Decimal)
+	reps = append(reps, Representation{
+		Type:        "varint",
+		Text:        strconv.FormatUint(val, 10),
+		Description: "Varint",
+		Likelihood:  0.9,
+	})
+
+	// 2. Zigzag Varint
+	zz := int64(val>>1) ^ -int64(val&1)
+	reps = append(reps, Representation{
+		Type:        "zigzag",
+		Text:        strconv.FormatInt(zz, 10),
+		Description: "Zigzag Varint",
+		Likelihood:  0.7,
+	})
+
+	// 3. Boolean
+	switch val {
+	case 0:
+		reps = append(reps, Representation{
+			Type:        "bool",
+			Text:        "false",
+			Description: "Boolean",
+			Likelihood:  0.8,
+		})
+	case 1:
+		reps = append(reps, Representation{
+			Type:        "bool",
+			Text:        "true",
+			Description: "Boolean",
+			Likelihood:  0.8,
+		})
+	}
+
+	return reps
+}
+
+func possibilitiesI32(payload []byte) []Representation {
+	if len(payload) != 4 {
+		return nil
+	}
+	val := binary.LittleEndian.Uint32(payload)
+
+	reps := make([]Representation, 0, 3)
+
+	// 1. Fixed32 (Hex)
+	reps = append(reps, Representation{
+		Type:        "fixed32",
+		Text:        fmt.Sprintf("0x%08xi32", val),
+		Description: "Fixed32 (Hex)",
+		Likelihood:  0.9,
+	})
+
+	// 2. Fixed32 (Decimal)
+	reps = append(reps, Representation{
+		Type:        "fixed32",
+		Text:        fmt.Sprintf("%di32", int32(val)),
+		Description: "Fixed32 (Decimal)",
+		Likelihood:  0.8,
+	})
+
+	// 3. Float32
+	fval := math.Float32frombits(val)
+	f64 := float64(fval)
+	text := fmt.Sprintf("%gf32", fval)
+	if !strings.Contains(text, ".") && !strings.Contains(text, "e") && !math.IsNaN(f64) && !math.IsInf(f64, 0) {
+		text = fmt.Sprintf("%.1ff32", fval)
+	}
+	var likelihood float64
+	switch {
+	case math.IsNaN(f64) || math.IsInf(f64, 0):
+		likelihood = 0.2
+	case fval == 0.0 || (math.Abs(f64) > 1e-6 && math.Abs(f64) < 1e6):
+		likelihood = 0.7
+	default:
+		likelihood = 0.5
+	}
+	reps = append(reps, Representation{
+		Type:        "float32",
+		Text:        text,
+		Description: "Float32",
+		Likelihood:  likelihood,
+	})
+
+	return reps
+}
+
+func possibilitiesI64(payload []byte) []Representation {
+	if len(payload) != 8 {
+		return nil
+	}
+	val := binary.LittleEndian.Uint64(payload)
+
+	reps := make([]Representation, 0, 3)
+
+	// 1. Fixed64 (Hex)
+	reps = append(reps, Representation{
+		Type:        "fixed64",
+		Text:        fmt.Sprintf("0x%016xi64", val),
+		Description: "Fixed64 (Hex)",
+		Likelihood:  0.9,
+	})
+
+	// 2. Fixed64 (Decimal)
+	reps = append(reps, Representation{
+		Type:        "fixed64",
+		Text:        fmt.Sprintf("%di64", int64(val)),
+		Description: "Fixed64 (Decimal)",
+		Likelihood:  0.8,
+	})
+
+	// 3. Float64
+	fval := math.Float64frombits(val)
+	text := fmt.Sprintf("%gf64", fval)
+	if !strings.Contains(text, ".") && !strings.Contains(text, "e") && !math.IsNaN(fval) && !math.IsInf(fval, 0) {
+		text = fmt.Sprintf("%.1ff64", fval)
+	}
+	var likelihood float64
+	switch {
+	case math.IsNaN(fval) || math.IsInf(fval, 0):
+		likelihood = 0.2
+	case fval == 0.0 || (math.Abs(fval) > 1e-6 && math.Abs(fval) < 1e6):
+		likelihood = 0.7
+	default:
+		likelihood = 0.5
+	}
+	reps = append(reps, Representation{
+		Type:        "float64",
+		Text:        text,
+		Description: "Float64",
+		Likelihood:  likelihood,
+	})
+
+	return reps
+}
+
+func possibilitiesLen(payload []byte) []Representation {
+	var reps []Representation
+
+	// 1. Fallback Hex Bytes (always valid)
+	reps = append(reps, Representation{
+		Type:        "bytes",
+		Text:        fmt.Sprintf("{`%s`}", toHexSpace(payload)),
+		Description: "Bytes",
+		Likelihood:  0.1,
+	})
+
+	// 2. String
+	if utf8.Valid(payload) {
+		isMsg := isMessage(payload)
+		likelihood := 0.4
+		if isPrintable(payload) {
+			if !isMsg {
+				likelihood = 0.9
+			} else {
+				likelihood = 0.6
+			}
+		}
+		reps = append(reps, Representation{
+			Type:        "string",
+			Text:        fmt.Sprintf("{%q}", string(payload)),
+			Description: "String",
+			Likelihood:  likelihood,
+		})
+	}
+
+	// 3. Message
+	if isStructMessage(payload) {
+		var buf bytes.Buffer
+		if err := Disassemble(payload, &buf); err == nil {
+			text := formatSingleLine(buf.String())
+			likelihood := 0.6
+			if isMessage(payload) {
+				likelihood = 0.9
+			}
+			reps = append(reps, Representation{
+				Type:        "message",
+				Text:        text,
+				Description: "Embedded Message",
+				Likelihood:  likelihood,
+			})
+		}
+	}
+
+	// 4. Packed Varints
+	if len(payload) > 0 {
+		var ints []uint64
+		off := 0
+		ok := true
+		for off < len(payload) {
+			v, n := binary.Uvarint(payload[off:])
+			if n <= 0 {
+				ok = false
+				break
+			}
+			off += n
+			ints = append(ints, v)
+		}
+		if ok && len(ints) > 0 {
+			var sb strings.Builder
+			sb.WriteString("[")
+			for _, val := range ints {
+				fmt.Fprintf(&sb, " %d", val)
+			}
+			sb.WriteString(" ]")
+			allSmall := true
+			for _, val := range ints {
+				if val > 1000 {
+					allSmall = false
+					break
+				}
+			}
+			likelihood := 0.3
+			if allSmall {
+				likelihood = 0.5
+			}
+			reps = append(reps, Representation{
+				Type:        "packed_varint",
+				Text:        sb.String(),
+				Description: "Packed Varints",
+				Likelihood:  likelihood,
+			})
+		}
+	}
+
+	// 5. Packed Fixed32
+	if len(payload) > 0 && len(payload)%4 == 0 {
+		var sb strings.Builder
+		sb.WriteString("[")
+		for i := 0; i < len(payload); i += 4 {
+			v := binary.LittleEndian.Uint32(payload[i:])
+			fmt.Fprintf(&sb, " 0x%08xi32", v)
+		}
+		sb.WriteString(" ]")
+		reps = append(reps, Representation{
+			Type:        "packed_fixed32",
+			Text:        sb.String(),
+			Description: "Packed Fixed32",
+			Likelihood:  0.4,
+		})
+	}
+
+	// 6. Packed Fixed64
+	if len(payload) > 0 && len(payload)%8 == 0 {
+		var sb strings.Builder
+		sb.WriteString("[")
+		for i := 0; i < len(payload); i += 8 {
+			v := binary.LittleEndian.Uint64(payload[i:])
+			fmt.Fprintf(&sb, " 0x%016xi64", v)
+		}
+		sb.WriteString(" ]")
+		reps = append(reps, Representation{
+			Type:        "packed_fixed64",
+			Text:        sb.String(),
+			Description: "Packed Fixed64",
+			Likelihood:  0.4,
+		})
+	}
 
 	return reps
 }

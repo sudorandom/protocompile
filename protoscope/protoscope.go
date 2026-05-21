@@ -62,6 +62,7 @@ type DisassembleOptions struct {
 	ExplicitWireTypes      bool
 	ExplicitLengthPrefixes bool
 	NoGroups               bool
+	MaxDepth               int
 }
 
 // Assemble parses and compiles protoscope text directly to protobuf wire binary.
@@ -84,6 +85,7 @@ func Disassemble(data []byte, opts DisassembleOptions) (string, error) {
 		ExplicitWireTypes:      opts.ExplicitWireTypes,
 		ExplicitLengthPrefixes: opts.ExplicitLengthPrefixes,
 		NoGroups:               opts.NoGroups,
+		MaxDepth:               opts.MaxDepth,
 	}
 	err := disassembler.DisassembleWithOptions(data, &buf, disOpts)
 	if err != nil {
@@ -157,9 +159,9 @@ func Hover(path string, text []byte, line, col int) (*HoverInfo, error) {
 		f := node.AsField()
 		var sb strings.Builder
 		sb.WriteString("### Field Tag\n")
-		sb.WriteString(fmt.Sprintf("- **Field Number:** `%s`\n", f.Tag().Text()))
+		fmt.Fprintf(&sb, "- **Field Number:** `%s`\n", f.Tag().Text())
 		if wt := f.WireType(); !wt.IsZero() && wt.Text() != "" {
-			sb.WriteString(fmt.Sprintf("- **Wire Type:** `%s`\n", wt.Text()))
+			fmt.Fprintf(&sb, "- **Wire Type:** `%s`\n", wt.Text())
 		}
 		hover.Text = sb.String()
 
@@ -168,22 +170,22 @@ func Hover(path string, text []byte, line, col int) (*HoverInfo, error) {
 		tok := l.Token()
 		var sb strings.Builder
 		sb.WriteString("### Literal Value\n")
-		sb.WriteString(fmt.Sprintf("- **Raw Text:** `%s`\n", tok.Text()))
+		fmt.Fprintf(&sb, "- **Raw Text:** `%s`\n", tok.Text())
 
 		if tok.Kind() == token.Number {
 			num := tok.AsNumber()
-			sb.WriteString(fmt.Sprintf("- **Type:** `Number` (suffix: `%s`)\n", num.Suffix().Text()))
+			fmt.Fprintf(&sb, "- **Type:** `Number` (suffix: `%s`)\n", num.Suffix().Text())
 			if v, exact := num.Int(); exact {
-				sb.WriteString(fmt.Sprintf("- **Decimal:** `%d`\n", v))
-				sb.WriteString(fmt.Sprintf("- **Hexadecimal:** `0x%X`\n", v))
-				sb.WriteString(fmt.Sprintf("- **Binary:** `0b%b`\n", v))
-				sb.WriteString(fmt.Sprintf("- **As Varint Bytes:** `%s`\n", varintBytes(v)))
+				fmt.Fprintf(&sb, "- **Decimal:** `%d`\n", v)
+				fmt.Fprintf(&sb, "- **Hexadecimal:** `0x%X`\n", v)
+				fmt.Fprintf(&sb, "- **Binary:** `0b%b`\n", v)
+				fmt.Fprintf(&sb, "- **As Varint Bytes:** `%s`\n", varintBytes(v))
 
 				// Interpret as signed 64-bit to show zigzag encoding if applicable
 				sval := int64(v)
-				sb.WriteString(fmt.Sprintf("- **Zigzag Encoded:** `%d`\n", (sval<<1)^(sval>>63)))
+				fmt.Fprintf(&sb, "- **Zigzag Encoded:** `%d`\n", (sval<<1)^(sval>>63))
 			} else if fval, exactf := num.Float(); exactf {
-				sb.WriteString(fmt.Sprintf("- **Floating Point:** `%g`\n", fval))
+				fmt.Fprintf(&sb, "- **Floating Point:** `%g`\n", fval)
 			}
 		} else if tok.Kind() == token.String {
 			sb.WriteString("- **Type:** `String`\n")
@@ -193,11 +195,11 @@ func Hover(path string, text []byte, line, col int) (*HoverInfo, error) {
 				// Hex string literal
 				decoded, err := hexDecode(tok.Text())
 				if err == nil {
-					sb.WriteString(fmt.Sprintf("- **Hex Length:** `%d bytes`\n", len(decoded)))
+					fmt.Fprintf(&sb, "- **Hex Length:** `%d bytes`\n", len(decoded))
 					if isPrintable(decoded) {
-						sb.WriteString(fmt.Sprintf("- **Decoded Text:** `%s`\n", string(decoded)))
+						fmt.Fprintf(&sb, "- **Decoded Text:** `%s`\n", string(decoded))
 					} else {
-						sb.WriteString(fmt.Sprintf("- **Decoded Hex Bytes:** `%02X`\n", decoded))
+						fmt.Fprintf(&sb, "- **Decoded Hex Bytes:** `%02X`\n", decoded)
 					}
 				}
 			}
@@ -396,10 +398,7 @@ type Representation struct {
 	Likelihood  float64 // Likelihood score, between 0.0 and 1.0 (higher is more likely)
 }
 
-// Possibilities analyzes the raw payload bytes for a given wire type and returns
-// all valid alternative representations sorted by likelihood.
-func Possibilities(wireType int, payload []byte) []Representation {
-	internalReps := disassembler.Possibilities(wireType, payload)
+func mapRepresentations(internalReps []disassembler.Representation) []Representation {
 	if internalReps == nil {
 		return nil
 	}
@@ -413,4 +412,10 @@ func Possibilities(wireType int, payload []byte) []Representation {
 		}
 	}
 	return reps
+}
+
+// Possibilities analyzes the raw payload bytes for a given wire type and returns
+// all valid alternative representations sorted by likelihood.
+func Possibilities(wireType int, payload []byte) []Representation {
+	return mapRepresentations(disassembler.Possibilities(wireType, payload))
 }

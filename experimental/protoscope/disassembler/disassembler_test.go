@@ -15,6 +15,7 @@
 package disassembler
 
 import (
+	"bytes"
 	"reflect"
 	"testing"
 )
@@ -128,5 +129,28 @@ func TestPossibilitiesLen(t *testing.T) {
 	}
 	if !hasMsg {
 		t.Errorf("missing message possibility for {1: 150}")
+	}
+}
+
+func TestMaxDepth(t *testing.T) {
+	// Nested groups: 0x0b = SGROUP tag 1, 0x0c = EGROUP tag 1
+	// 3 levels of nesting
+	data := []byte{0x0b, 0x0b, 0x0b, 0x0c, 0x0c, 0x0c}
+
+	var buf bytes.Buffer
+	// With MaxDepth: 2, should exceed the limit and error
+	err := DisassembleWithOptions(data, &buf, Options{MaxDepth: 2})
+	if err == nil {
+		t.Error("expected error with MaxDepth: 2, got nil")
+	} else if err.Error() != "max depth exceeded" {
+		t.Errorf("expected 'max depth exceeded', got %v", err)
+	}
+
+	// With MaxDepth: 1, should also exceed and error
+	err = DisassembleWithOptions(data, &buf, Options{MaxDepth: 1})
+	if err == nil {
+		t.Error("expected error with MaxDepth: 1, got nil")
+	} else if err.Error() != "max depth exceeded" {
+		t.Errorf("expected 'max depth exceeded', got %v", err)
 	}
 }
