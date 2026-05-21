@@ -15,14 +15,10 @@
 package disassembler
 
 import (
-	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
-	"math"
-	"sort"
-	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -114,71 +110,20 @@ func (d *disassembler) disassemble(out io.Writer, indent int, groupTag uint64, d
 		}
 		d.off += n
 
+		var err error
 		switch wireType {
 		case wireVarint:
-			v, n := binary.Uvarint(d.data[d.off:])
-			if n <= 0 {
-				return fmt.Errorf("invalid varint at offset %d", d.off)
-			}
-			d.off += n
-			fmt.Fprintf(out, "%d\n", v)
-
+			err = d.disassembleVarint(out)
 		case wireI64:
-			if d.off+8 > len(d.data) {
-				return errors.New("unexpected EOF reading I64")
-			}
-			v := binary.LittleEndian.Uint64(d.data[d.off:])
-			d.off += 8
-			fmt.Fprintf(out, "0x%016xi64\n", v)
-
+			err = d.disassembleI64(out)
 		case wireLen:
-			l, n := binary.Uvarint(d.data[d.off:])
-			if n <= 0 {
-				return fmt.Errorf("invalid length at offset %d", d.off)
-			}
-			d.off += n
-			if l > uint64(len(d.data)-d.off) {
-				return fmt.Errorf("length %d out of bounds", l)
-			}
-			payload := d.data[d.off : d.off+int(l)]
-			d.off += int(l)
-
-			if d.opts.ExplicitLengthPrefixes {
-				fmt.Fprintf(out, "%d ", l)
-			}
-
-			// Heuristic: Prefer string if it's cleanly printable and not obviously a message.
-			switch {
-			case isPrintable(payload) && !isMessage(payload):
-				fmt.Fprintf(out, "{%q}\n", string(payload))
-			case isMessage(payload):
-				fmt.Fprint(out, "{\n")
-				sub := &disassembler{data: payload, opts: d.opts}
-				if err := sub.disassemble(out, indent+1, 0, depth+1); err != nil {
-					if err.Error() == "max depth exceeded" {
-						return err
-					}
-					// If recursion fails, fall back to hex for this payload
-					fmt.Fprintf(out, " (fallback) `%s`", toHexSpace(payload))
-				}
-				fmt.Fprint(out, strings.Repeat("  ", indent))
-				fmt.Fprint(out, "}\n")
-			default:
-				fmt.Fprintf(out, "{`%s`}\n", toHexSpace(payload))
-			}
-
+			err = d.disassembleLen(out, indent, depth)
 		case wireSGroup:
 			if d.opts.NoGroups {
 				fmt.Fprint(out, "\n")
 				continue
 			}
-			fmt.Fprint(out, "!{\n")
-			if err := d.disassemble(out, indent+1, tag, depth+1); err != nil {
-				return err
-			}
-			fmt.Fprint(out, strings.Repeat("  ", indent))
-			fmt.Fprint(out, "}\n")
-
+			err = d.disassembleSGroup(out, indent, tag, depth)
 		case wireEGroup:
 			if d.opts.NoGroups {
 				fmt.Fprint(out, "\n")
@@ -186,21 +131,96 @@ func (d *disassembler) disassemble(out io.Writer, indent int, groupTag uint64, d
 			}
 			// Should have been handled above if matching.
 			fmt.Fprintf(out, "(unmatched EGroup)\n")
-
 		case wireI32:
-			if d.off+4 > len(d.data) {
-				return errors.New("unexpected EOF reading I32")
-			}
-			v := binary.LittleEndian.Uint32(d.data[d.off:])
-			d.off += 4
-			fmt.Fprintf(out, "0x%08xi32\n", v)
-
+			err = d.disassembleI32(out)
 		default:
 			fmt.Fprintf(out, "(unsupported wire type %d)\n", wireType)
+		}
+		if err != nil {
+			return err
 		}
 	}
 	return nil
 }
+
+func (d *disassembler) disassembleVarint(out io.Writer) error {
+	v, n := binary.Uvarint(d.data[d.off:])
+	if n <= 0 {
+		return fmt.Errorf("invalid varint at offset %d", d.off)
+	}
+	d.off += n
+	fmt.Fprintf(out, "%d\n", v)
+	return nil
+}
+
+func (d *disassembler) disassembleI64(out io.Writer) error {
+	if d.off+8 > len(d.data) {
+		return errors.New("unexpected EOF reading I64")
+	}
+	v := binary.LittleEndian.Uint64(d.data[d.off:])
+	d.off += 8
+	fmt.Fprintf(out, "0x%016xi64\n", v)
+	return nil
+}
+
+func (d *disassembler) disassembleI32(out io.Writer) error {
+	if d.off+4 > len(d.data) {
+		return errors.New("unexpected EOF reading I32")
+	}
+	v := binary.LittleEndian.Uint32(d.data[d.off:])
+	d.off += 4
+	fmt.Fprintf(out, "0x%08xi32\n", v)
+	return nil
+}
+
+func (d *disassembler) disassembleLen(out io.Writer, indent, depth int) error {
+	l, n := binary.Uvarint(d.data[d.off:])
+	if n <= 0 {
+		return fmt.Errorf("invalid length at offset %d", d.off)
+	}
+	d.off += n
+	if l > uint64(len(d.data)-d.off) {
+		return fmt.Errorf("length %d out of bounds", l)
+	}
+	payload := d.data[d.off : d.off+int(l)]
+	d.off += int(l)
+
+	if d.opts.ExplicitLengthPrefixes {
+		fmt.Fprintf(out, "%d ", l)
+	}
+
+	// Heuristic: Prefer string if it's cleanly printable and not obviously a message.
+	switch {
+	case isPrintable(payload) && !isMessage(payload):
+		fmt.Fprintf(out, "{%q}\n", string(payload))
+	case isMessage(payload):
+		fmt.Fprint(out, "{\n")
+		sub := &disassembler{data: payload, opts: d.opts}
+		if err := sub.disassemble(out, indent+1, 0, depth+1); err != nil {
+			if err.Error() == "max depth exceeded" {
+				return err
+			}
+			// If recursion fails, fall back to hex for this payload
+			fmt.Fprintf(out, " (fallback) `%s`", toHexSpace(payload))
+		}
+		fmt.Fprint(out, strings.Repeat("  ", indent))
+		fmt.Fprint(out, "}\n")
+	default:
+		fmt.Fprintf(out, "{`%s`}\n", toHexSpace(payload))
+	}
+	return nil
+}
+
+func (d *disassembler) disassembleSGroup(out io.Writer, indent int, tag uint64, depth int) error {
+	fmt.Fprint(out, "!{\n")
+	if err := d.disassemble(out, indent+1, tag, depth+1); err != nil {
+		return err
+	}
+	fmt.Fprint(out, strings.Repeat("  ", indent))
+	fmt.Fprint(out, "}\n")
+	return nil
+}
+
 
 func (d *disassembler) dumpHex(out io.Writer, indent int) error {
 	if d.off >= len(d.data) {
@@ -266,10 +286,6 @@ func checkMessageStructure(data []byte) (ok bool, fields int) {
 	return off == len(data), fields
 }
 
-func isStructMessage(data []byte) bool {
-	ok, fields := checkMessageStructure(data)
-	return ok && fields > 0
-}
 
 func isMessage(data []byte) bool {
 	ok, fields := checkMessageStructure(data)
@@ -334,320 +350,6 @@ func toHexSpace(data []byte) string {
 	return sb.String()
 }
 
-func formatSingleLine(text string) string {
-	text = strings.TrimSpace(text)
-	lines := strings.Split(text, "\n")
-	var cleaned []string
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line != "" {
-			cleaned = append(cleaned, line)
-		}
-	}
-	return "{ " + strings.Join(cleaned, " ") + " }"
-}
 
-// Representation represents a possible translation/formatting of a protobuf value.
-type Representation struct {
-	Type        string  // E.g., "message", "string", "bytes", "varint", "zigzag", "bool", "fixed32", "float32", "fixed64", "float64", "packed_varint", "packed_fixed32", "packed_fixed64"
-	Text        string  // The protoscope textual value representation
-	Description string  // Human-readable description
-	Likelihood  float64 // Likelihood score, between 0.0 and 1.0 (higher is more likely)
-}
 
-// Possibilities analyzes the raw payload bytes for a given wire type and returns
-// all valid alternative representations sorted by likelihood.
-func Possibilities(wireType int, payload []byte) []Representation {
-	var reps []Representation
 
-	switch wireType {
-	case wireVarint:
-		reps = possibilitiesVarint(payload)
-	case wireI32:
-		reps = possibilitiesI32(payload)
-	case wireI64:
-		reps = possibilitiesI64(payload)
-	case wireLen:
-		reps = possibilitiesLen(payload)
-	}
-
-	sort.Slice(reps, func(i, j int) bool {
-		if reps[i].Likelihood == reps[j].Likelihood {
-			return reps[i].Description < reps[j].Description
-		}
-		return reps[i].Likelihood > reps[j].Likelihood
-	})
-
-	return reps
-}
-
-func possibilitiesVarint(payload []byte) []Representation {
-	val, n := binary.Uvarint(payload)
-	if n <= 0 || n < len(payload) {
-		return nil
-	}
-
-	var reps []Representation
-
-	// 1. Unsigned Varint (Decimal)
-	reps = append(reps, Representation{
-		Type:        "varint",
-		Text:        strconv.FormatUint(val, 10),
-		Description: "Varint",
-		Likelihood:  0.9,
-	})
-
-	// 2. Zigzag Varint
-	zz := int64(val>>1) ^ -int64(val&1)
-	reps = append(reps, Representation{
-		Type:        "zigzag",
-		Text:        strconv.FormatInt(zz, 10),
-		Description: "Zigzag Varint",
-		Likelihood:  0.7,
-	})
-
-	// 3. Boolean
-	switch val {
-	case 0:
-		reps = append(reps, Representation{
-			Type:        "bool",
-			Text:        "false",
-			Description: "Boolean",
-			Likelihood:  0.8,
-		})
-	case 1:
-		reps = append(reps, Representation{
-			Type:        "bool",
-			Text:        "true",
-			Description: "Boolean",
-			Likelihood:  0.8,
-		})
-	}
-
-	return reps
-}
-
-func possibilitiesI32(payload []byte) []Representation {
-	if len(payload) != 4 {
-		return nil
-	}
-	val := binary.LittleEndian.Uint32(payload)
-
-	reps := make([]Representation, 0, 3)
-
-	// 1. Fixed32 (Hex)
-	reps = append(reps, Representation{
-		Type:        "fixed32",
-		Text:        fmt.Sprintf("0x%08xi32", val),
-		Description: "Fixed32 (Hex)",
-		Likelihood:  0.9,
-	})
-
-	// 2. Fixed32 (Decimal)
-	reps = append(reps, Representation{
-		Type:        "fixed32",
-		Text:        fmt.Sprintf("%di32", int32(val)),
-		Description: "Fixed32 (Decimal)",
-		Likelihood:  0.8,
-	})
-
-	// 3. Float32
-	fval := math.Float32frombits(val)
-	f64 := float64(fval)
-	text := fmt.Sprintf("%gf32", fval)
-	if !strings.Contains(text, ".") && !strings.Contains(text, "e") && !math.IsNaN(f64) && !math.IsInf(f64, 0) {
-		text = fmt.Sprintf("%.1ff32", fval)
-	}
-	var likelihood float64
-	switch {
-	case math.IsNaN(f64) || math.IsInf(f64, 0):
-		likelihood = 0.2
-	case fval == 0.0 || (math.Abs(f64) > 1e-6 && math.Abs(f64) < 1e6):
-		likelihood = 0.7
-	default:
-		likelihood = 0.5
-	}
-	reps = append(reps, Representation{
-		Type:        "float32",
-		Text:        text,
-		Description: "Float32",
-		Likelihood:  likelihood,
-	})
-
-	return reps
-}
-
-func possibilitiesI64(payload []byte) []Representation {
-	if len(payload) != 8 {
-		return nil
-	}
-	val := binary.LittleEndian.Uint64(payload)
-
-	reps := make([]Representation, 0, 3)
-
-	// 1. Fixed64 (Hex)
-	reps = append(reps, Representation{
-		Type:        "fixed64",
-		Text:        fmt.Sprintf("0x%016xi64", val),
-		Description: "Fixed64 (Hex)",
-		Likelihood:  0.9,
-	})
-
-	// 2. Fixed64 (Decimal)
-	reps = append(reps, Representation{
-		Type:        "fixed64",
-		Text:        fmt.Sprintf("%di64", int64(val)),
-		Description: "Fixed64 (Decimal)",
-		Likelihood:  0.8,
-	})
-
-	// 3. Float64
-	fval := math.Float64frombits(val)
-	text := fmt.Sprintf("%gf64", fval)
-	if !strings.Contains(text, ".") && !strings.Contains(text, "e") && !math.IsNaN(fval) && !math.IsInf(fval, 0) {
-		text = fmt.Sprintf("%.1ff64", fval)
-	}
-	var likelihood float64
-	switch {
-	case math.IsNaN(fval) || math.IsInf(fval, 0):
-		likelihood = 0.2
-	case fval == 0.0 || (math.Abs(fval) > 1e-6 && math.Abs(fval) < 1e6):
-		likelihood = 0.7
-	default:
-		likelihood = 0.5
-	}
-	reps = append(reps, Representation{
-		Type:        "float64",
-		Text:        text,
-		Description: "Float64",
-		Likelihood:  likelihood,
-	})
-
-	return reps
-}
-
-func possibilitiesLen(payload []byte) []Representation {
-	var reps []Representation
-
-	// 1. Fallback Hex Bytes (always valid)
-	reps = append(reps, Representation{
-		Type:        "bytes",
-		Text:        fmt.Sprintf("{`%s`}", toHexSpace(payload)),
-		Description: "Bytes",
-		Likelihood:  0.1,
-	})
-
-	// 2. String
-	if utf8.Valid(payload) {
-		isMsg := isMessage(payload)
-		likelihood := 0.4
-		if isPrintable(payload) {
-			if !isMsg {
-				likelihood = 0.9
-			} else {
-				likelihood = 0.6
-			}
-		}
-		reps = append(reps, Representation{
-			Type:        "string",
-			Text:        fmt.Sprintf("{%q}", string(payload)),
-			Description: "String",
-			Likelihood:  likelihood,
-		})
-	}
-
-	// 3. Message
-	if isStructMessage(payload) {
-		var buf bytes.Buffer
-		if err := Disassemble(payload, &buf); err == nil {
-			text := formatSingleLine(buf.String())
-			likelihood := 0.6
-			if isMessage(payload) {
-				likelihood = 0.9
-			}
-			reps = append(reps, Representation{
-				Type:        "message",
-				Text:        text,
-				Description: "Embedded Message",
-				Likelihood:  likelihood,
-			})
-		}
-	}
-
-	// 4. Packed Varints
-	if len(payload) > 0 {
-		var ints []uint64
-		off := 0
-		ok := true
-		for off < len(payload) {
-			v, n := binary.Uvarint(payload[off:])
-			if n <= 0 {
-				ok = false
-				break
-			}
-			off += n
-			ints = append(ints, v)
-		}
-		if ok && len(ints) > 0 {
-			var sb strings.Builder
-			sb.WriteString("[")
-			for _, val := range ints {
-				fmt.Fprintf(&sb, " %d", val)
-			}
-			sb.WriteString(" ]")
-			allSmall := true
-			for _, val := range ints {
-				if val > 1000 {
-					allSmall = false
-					break
-				}
-			}
-			likelihood := 0.3
-			if allSmall {
-				likelihood = 0.5
-			}
-			reps = append(reps, Representation{
-				Type:        "packed_varint",
-				Text:        sb.String(),
-				Description: "Packed Varints",
-				Likelihood:  likelihood,
-			})
-		}
-	}
-
-	// 5. Packed Fixed32
-	if len(payload) > 0 && len(payload)%4 == 0 {
-		var sb strings.Builder
-		sb.WriteString("[")
-		for i := 0; i < len(payload); i += 4 {
-			v := binary.LittleEndian.Uint32(payload[i:])
-			fmt.Fprintf(&sb, " 0x%08xi32", v)
-		}
-		sb.WriteString(" ]")
-		reps = append(reps, Representation{
-			Type:        "packed_fixed32",
-			Text:        sb.String(),
-			Description: "Packed Fixed32",
-			Likelihood:  0.4,
-		})
-	}
-
-	// 6. Packed Fixed64
-	if len(payload) > 0 && len(payload)%8 == 0 {
-		var sb strings.Builder
-		sb.WriteString("[")
-		for i := 0; i < len(payload); i += 8 {
-			v := binary.LittleEndian.Uint64(payload[i:])
-			fmt.Fprintf(&sb, " 0x%016xi64", v)
-		}
-		sb.WriteString(" ]")
-		reps = append(reps, Representation{
-			Type:        "packed_fixed64",
-			Text:        sb.String(),
-			Description: "Packed Fixed64",
-			Likelihood:  0.4,
-		})
-	}
-
-	return reps
-}

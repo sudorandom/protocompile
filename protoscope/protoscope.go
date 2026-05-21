@@ -268,10 +268,11 @@ func collectSymbols(decl ast.DeclAny) []DocumentSymbol {
 
 		name := b.Token().Text()
 		detail := ""
-		if name == "!{" {
+		switch name {
+		case "!{":
 			name = "Group"
 			detail = "!{}"
-		} else if name == "{" {
+		case "{":
 			name = "Length-Prefixed"
 			detail = "{}"
 		}
