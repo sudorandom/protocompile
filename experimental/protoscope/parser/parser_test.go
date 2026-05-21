@@ -16,6 +16,8 @@ package parser
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/bufbuild/protocompile/experimental/id"
@@ -26,29 +28,47 @@ import (
 )
 
 func TestParse(t *testing.T) {
-	input := "1: 150"
-	src := source.NewFile("test.protoscope", input)
-	r := &report.Report{}
-	file, ok := Parse("test.protoscope", src, r)
-	if !ok {
-		t.Fatalf("Parse failed: %v", r.Diagnostics)
+	files, err := filepath.Glob("../testdata/*.protoscope")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) == 0 {
+		t.Fatal("no test files found in ../testdata")
 	}
 
-	for decl := range seq.Values(file.Decls()) {
-		span := decl.Span()
-		t.Logf("decl span: %v", span)
-	}
+	for _, file := range files {
+		name := filepath.Base(file)
+		t.Run(name, func(t *testing.T) {
+			content, err := os.ReadFile(file)
+			if err != nil {
+				t.Fatal(err)
+			}
 
-	if file.Decls().Len() == 0 {
-		t.Errorf("expected at least one declaration, got 0")
-		t.Logf("token stream: %v", file.Stream())
-		c := file.Stream().Cursor()
-		for !c.Done() {
-			t.Logf("token: %v (%q)", c.Peek(), c.Peek().Text())
-			_ = c.Next()
-		}
+			src := source.NewFile(name, string(content))
+			r := &report.Report{}
+			parsed, ok := Parse(name, src, r)
+			if !ok {
+				t.Fatalf("Parse failed: %v", r.Diagnostics)
+			}
+
+			for decl := range seq.Values(parsed.Decls()) {
+				span := decl.Span()
+				t.Logf("decl span: %v", span)
+			}
+
+			if parsed.Decls().Len() == 0 {
+				t.Errorf("expected at least one declaration, got 0")
+				t.Logf("token stream: %v", parsed.Stream())
+				c := parsed.Stream().Cursor()
+				for !c.Done() {
+					t.Logf("token: %v (%q)", c.Peek(), c.Peek().Text())
+					_ = c.Next()
+				}
+			}
+		})
 	}
 }
+
 
 func TestSliceReallocation(t *testing.T) {
 	var buf bytes.Buffer
