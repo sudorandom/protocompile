@@ -157,9 +157,27 @@ func (d *disassembler) disassembleI64(out io.Writer) error {
 	if d.off+8 > len(d.data) {
 		return errors.New("unexpected EOF reading I64")
 	}
-	v := binary.LittleEndian.Uint64(d.data[d.off:])
+	payload := d.data[d.off : d.off+8]
+	v := binary.LittleEndian.Uint64(payload)
 	d.off += 8
-	fmt.Fprintf(out, "0x%016xi64\n", v)
+
+	reps := possibilitiesI64(payload)
+	var floatRep *Representation
+	for _, r := range reps {
+		if r.Type == "float64" {
+			floatRep = &r
+			break
+		}
+	}
+
+	hexVal := fmt.Sprintf("0x%016xi64", v)
+	if floatRep != nil && floatRep.Likelihood >= 0.7 {
+		fmt.Fprintf(out, "%s # %s\n", floatRep.Text, hexVal)
+	} else if floatRep != nil {
+		fmt.Fprintf(out, "%s # %s\n", hexVal, floatRep.Text)
+	} else {
+		fmt.Fprintln(out, hexVal)
+	}
 	return nil
 }
 
@@ -167,9 +185,27 @@ func (d *disassembler) disassembleI32(out io.Writer) error {
 	if d.off+4 > len(d.data) {
 		return errors.New("unexpected EOF reading I32")
 	}
-	v := binary.LittleEndian.Uint32(d.data[d.off:])
+	payload := d.data[d.off : d.off+4]
+	v := binary.LittleEndian.Uint32(payload)
 	d.off += 4
-	fmt.Fprintf(out, "0x%08xi32\n", v)
+
+	reps := possibilitiesI32(payload)
+	var floatRep *Representation
+	for _, r := range reps {
+		if r.Type == "float32" {
+			floatRep = &r
+			break
+		}
+	}
+
+	hexVal := fmt.Sprintf("0x%08xi32", v)
+	if floatRep != nil && floatRep.Likelihood >= 0.7 {
+		fmt.Fprintf(out, "%s # %s\n", floatRep.Text, hexVal)
+	} else if floatRep != nil {
+		fmt.Fprintf(out, "%s # %s\n", hexVal, floatRep.Text)
+	} else {
+		fmt.Fprintln(out, hexVal)
+	}
 	return nil
 }
 

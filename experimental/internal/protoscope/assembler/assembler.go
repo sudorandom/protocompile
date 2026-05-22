@@ -17,6 +17,7 @@ package assembler
 import (
 	"encoding/binary"
 	"encoding/hex"
+	"math"
 	"strings"
 	"unicode"
 
@@ -71,9 +72,9 @@ func (a *assembler) assembleField(f ast.Field) {
 			} else if lit.Token().Kind() == token.Number {
 				suffix := lit.Token().AsNumber().Suffix().Text()
 				switch suffix {
-				case "i64":
+				case "i64", "f64":
 					wireType = 1 // I64
-				case "i32":
+				case "i32", "f32":
 					wireType = 5 // I32
 				}
 			}
@@ -158,10 +159,20 @@ func (a *assembler) assembleLiteral(l ast.Literal, inBlock bool) {
 			var buf [4]byte
 			binary.LittleEndian.PutUint32(buf[:], uint32(v))
 			a.buf = append(a.buf, buf[:]...)
+		case "f32":
+			f, _ := num.Float()
+			var buf [4]byte
+			binary.LittleEndian.PutUint32(buf[:], math.Float32bits(float32(f)))
+			a.buf = append(a.buf, buf[:]...)
 		case "i64":
 			v, _ := num.Int()
 			var buf [8]byte
 			binary.LittleEndian.PutUint64(buf[:], v)
+			a.buf = append(a.buf, buf[:]...)
+		case "f64":
+			f, _ := num.Float()
+			var buf [8]byte
+			binary.LittleEndian.PutUint64(buf[:], math.Float64bits(f))
 			a.buf = append(a.buf, buf[:]...)
 		case "z":
 			v := num.Value().Int(nil).Int64()
