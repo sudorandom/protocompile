@@ -54,7 +54,7 @@ func TestPossibilitiesI32(t *testing.T) {
 	for _, r := range res {
 		if r.Type == "float32" {
 			foundFloat = true
-			if r.Text != "1.0f32" && r.Text != "1f32" {
+			if r.Text != "1.0i32" && r.Text != "1i32" {
 				t.Errorf("unexpected float32 format: %s", r.Text)
 			}
 		}
@@ -73,7 +73,7 @@ func TestPossibilitiesI64(t *testing.T) {
 	for _, r := range res {
 		if r.Type == "float64" {
 			foundFloat = true
-			if r.Text != "1.0f64" && r.Text != "1f64" {
+			if r.Text != "1.0" && r.Text != "1" {
 				t.Errorf("unexpected float64 format: %s", r.Text)
 			}
 		}

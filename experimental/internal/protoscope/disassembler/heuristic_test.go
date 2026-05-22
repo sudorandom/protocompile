@@ -19,13 +19,12 @@ func TestDisassembleHeuristicComments(t *testing.T) {
 			data: func() []byte {
 				// Tag 1, I64
 				buf := []byte{0x09}
-				// let's just use fixed bytes for 123.456
-				// 0x405edd2f1a9fbe77
+				// 0x405edd2f1a9fbe77 -> 123.456
 				buf = append(buf, 0x77, 0xbe, 0x9f, 0x1a, 0x2f, 0xdd, 0x5e, 0x40)
 				return buf
 			}(),
 			expected: []string{
-				"1: 123.456f64 # 0x405edd2f1a9fbe77i64",
+				"1: 123.456                    # 0x405edd2f1a9fbe77i64",
 			},
 		},
 		{
@@ -38,7 +37,7 @@ func TestDisassembleHeuristicComments(t *testing.T) {
 				return buf
 			}(),
 			expected: []string{
-				"2: 78.9f32 # 0x429dcccdi32",
+				"2: 78.9i32                    # 0x429dcccdi32",
 			},
 		},
 		{
@@ -51,7 +50,7 @@ func TestDisassembleHeuristicComments(t *testing.T) {
 				return buf
 			}(),
 			expected: []string{
-				"12: 0x6c62696e406d6172i64 # 1.239664294489405e+214f64",
+				"12: 1.239664294489405e214     # 0x6c62696e406d6172i64",
 			},
 		},
 		{
@@ -64,7 +63,7 @@ func TestDisassembleHeuristicComments(t *testing.T) {
 				return buf
 			}(),
 			expected: []string{
-				"12: 0x74696e67i32 # 7.397732e+31f32",
+				"12: 7.397732e31i32            # 0x74696e67i32",
 			},
 		},
 		{
@@ -72,15 +71,16 @@ func TestDisassembleHeuristicComments(t *testing.T) {
 			data: func() []byte {
 				// Tag 1, I64
 				buf := []byte{0x09}
-				// NaN -> 0xffffffffffffffa8 (example from failure)
+				// NaN -> 0xffffffffffffffa8
 				buf = append(buf, 0xa8, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff)
 				return buf
 			}(),
 			expected: []string{
-				"1: 0xffffffffffffffa8i64 # NaNf64",
+				"1: 0xffffffffffffffa8i64      # NaN",
 			},
 		},
 	}
+
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

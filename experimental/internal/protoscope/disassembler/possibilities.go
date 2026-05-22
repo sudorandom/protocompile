@@ -132,9 +132,11 @@ func possibilitiesI32(payload []byte) []Representation {
 	// 3. Float32
 	fval := math.Float32frombits(val)
 	f64 := float64(fval)
-	text := fmt.Sprintf("%gf32", fval)
+	text := fmt.Sprintf("%g", fval)
+	text = strings.Replace(text, "e+", "e", 1)
+	text += "i32"
 	if !strings.Contains(text, ".") && !strings.Contains(text, "e") && !math.IsNaN(f64) && !math.IsInf(f64, 0) {
-		text = fmt.Sprintf("%.1ff32", fval)
+		text = fmt.Sprintf("%.1fi32", fval)
 	}
 	var likelihood float64
 	switch {
@@ -180,16 +182,17 @@ func possibilitiesI64(payload []byte) []Representation {
 	})
 
 	// 3. Float64
-	fval := math.Float64frombits(val)
-	text := fmt.Sprintf("%gf64", fval)
-	if !strings.Contains(text, ".") && !strings.Contains(text, "e") && !math.IsNaN(fval) && !math.IsInf(fval, 0) {
-		text = fmt.Sprintf("%.1ff64", fval)
+	fValActual := math.Float64frombits(val)
+	text := fmt.Sprintf("%g", fValActual)
+	text = strings.Replace(text, "e+", "e", 1)
+	if !strings.Contains(text, ".") && !strings.Contains(text, "e") && !math.IsNaN(fValActual) && !math.IsInf(fValActual, 0) {
+		text = fmt.Sprintf("%.1f", fValActual)
 	}
 	var likelihood float64
 	switch {
-	case math.IsNaN(fval) || math.IsInf(fval, 0):
+	case math.IsNaN(fValActual) || math.IsInf(fValActual, 0):
 		likelihood = 0.2
-	case fval == 0.0 || (math.Abs(fval) > 1e-6 && math.Abs(fval) < 1e6):
+	case fValActual == 0.0 || (math.Abs(fValActual) > 1e-6 && math.Abs(fValActual) < 1e6):
 		likelihood = 0.7
 	default:
 		likelihood = 0.5

@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -101,61 +102,89 @@ func (d *disassembler) disassemble(out io.Writer, indent int, groupTag uint64, d
 			return d.dumpHex(out, indent)
 		}
 
-		fmt.Fprint(out, strings.Repeat("  ", indent))
-		fmt.Fprintf(out, "%d:", tag)
-		if d.opts.ExplicitWireTypes {
-			fmt.Fprint(out, wireTypeNames[wireType])
-		} else {
-			fmt.Fprint(out, " ")
-		}
 		d.off += n
 
+		tagPart := fmt.Sprintf("%d:", tag)
+		if d.opts.ExplicitWireTypes {
+			tagPart += wireTypeNames[wireType]
+		} else {
+			tagPart += " "
+		}
+
+		var valStr string
+		var comment string
 		var err error
+
 		switch wireType {
 		case wireVarint:
-			err = d.disassembleVarint(out)
+			v, vn := binary.Uvarint(d.data[d.off:])
+			if vn <= 0 {
+				err = fmt.Errorf("invalid varint at offset %d", d.off)
+			} else {
+				d.off += vn
+				valStr = strconv.FormatUint(v, 10)
+			}
 		case wireI64:
-			err = d.disassembleI64(out)
+			valStr, comment, err = d.disassembleI64()
 		case wireLen:
+			fmt.Fprint(out, strings.Repeat("  ", indent))
+			fmt.Fprint(out, tagPart)
 			err = d.disassembleLen(out, indent, depth)
+			if err == nil {
+				continue // Already handled line/block
+			}
 		case wireSGroup:
 			if d.opts.NoGroups {
-				fmt.Fprint(out, "\n")
+				fmt.Fprintln(out)
 				continue
 			}
+			fmt.Fprint(out, strings.Repeat("  ", indent))
+			fmt.Fprint(out, tagPart)
 			err = d.disassembleSGroup(out, indent, tag, depth)
+			if err == nil {
+				continue
+			}
 		case wireEGroup:
 			if d.opts.NoGroups {
-				fmt.Fprint(out, "\n")
+				fmt.Fprintln(out)
 				continue
 			}
 			// Should have been handled above if matching.
-			fmt.Fprintf(out, "(unmatched EGroup)\n")
+			valStr = "(unmatched EGroup)"
 		case wireI32:
-			err = d.disassembleI32(out)
+			valStr, comment, err = d.disassembleI32()
 		default:
-			fmt.Fprintf(out, "(unsupported wire type %d)\n", wireType)
+			valStr = fmt.Sprintf("(unsupported wire type %d)", wireType)
 		}
+
 		if err != nil {
 			return err
 		}
+
+		if valStr != "" {
+			fmt.Fprint(out, strings.Repeat("  ", indent))
+			line := tagPart + valStr
+			fmt.Fprint(out, line)
+			if comment != "" {
+				// Align to column 30 (including indentation)
+				currentPos := indent*2 + len(line)
+				padding := 30 - currentPos
+				if padding < 1 {
+					padding = 1
+				}
+				fmt.Fprint(out, strings.Repeat(" ", padding))
+				fmt.Fprint(out, "# ")
+				fmt.Fprint(out, comment)
+			}
+			fmt.Fprintln(out)
+		}
 	}
 	return nil
 }
 
-func (d *disassembler) disassembleVarint(out io.Writer) error {
-	v, n := binary.Uvarint(d.data[d.off:])
-	if n <= 0 {
-		return fmt.Errorf("invalid varint at offset %d", d.off)
-	}
-	d.off += n
-	fmt.Fprintf(out, "%d\n", v)
-	return nil
-}
-
-func (d *disassembler) disassembleI64(out io.Writer) error {
+func (d *disassembler) disassembleI64() (string, string, error) {
 	if d.off+8 > len(d.data) {
-		return errors.New("unexpected EOF reading I64")
+		return "", "", errors.New("unexpected EOF reading I64")
 	}
 	payload := d.data[d.off : d.off+8]
 	v := binary.LittleEndian.Uint64(payload)
@@ -171,19 +200,17 @@ func (d *disassembler) disassembleI64(out io.Writer) error {
 	}
 
 	hexVal := fmt.Sprintf("0x%016xi64", v)
-	if floatRep != nil && floatRep.Likelihood >= 0.7 {
-		fmt.Fprintf(out, "%s # %s\n", floatRep.Text, hexVal)
+	if floatRep != nil && floatRep.Likelihood >= 0.5 {
+		return floatRep.Text, hexVal, nil
 	} else if floatRep != nil {
-		fmt.Fprintf(out, "%s # %s\n", hexVal, floatRep.Text)
-	} else {
-		fmt.Fprintln(out, hexVal)
+		return hexVal, floatRep.Text, nil
 	}
-	return nil
+	return hexVal, "", nil
 }
 
-func (d *disassembler) disassembleI32(out io.Writer) error {
+func (d *disassembler) disassembleI32() (string, string, error) {
 	if d.off+4 > len(d.data) {
-		return errors.New("unexpected EOF reading I32")
+		return "", "", errors.New("unexpected EOF reading I32")
 	}
 	payload := d.data[d.off : d.off+4]
 	v := binary.LittleEndian.Uint32(payload)
@@ -199,14 +226,12 @@ func (d *disassembler) disassembleI32(out io.Writer) error {
 	}
 
 	hexVal := fmt.Sprintf("0x%08xi32", v)
-	if floatRep != nil && floatRep.Likelihood >= 0.7 {
-		fmt.Fprintf(out, "%s # %s\n", floatRep.Text, hexVal)
+	if floatRep != nil && floatRep.Likelihood >= 0.5 {
+		return floatRep.Text, hexVal, nil
 	} else if floatRep != nil {
-		fmt.Fprintf(out, "%s # %s\n", hexVal, floatRep.Text)
-	} else {
-		fmt.Fprintln(out, hexVal)
+		return hexVal, floatRep.Text, nil
 	}
-	return nil
+	return hexVal, "", nil
 }
 
 func (d *disassembler) disassembleLen(out io.Writer, indent, depth int) error {

@@ -70,12 +70,17 @@ func (a *assembler) assembleField(f ast.Field) {
 			if lit.Token().Kind() == token.String {
 				wireType = 2 // LEN
 			} else if lit.Token().Kind() == token.Number {
-				suffix := lit.Token().AsNumber().Suffix().Text()
+				num := lit.Token().AsNumber()
+				suffix := num.Suffix().Text()
 				switch suffix {
 				case "i64", "f64":
 					wireType = 1 // I64
 				case "i32", "f32":
 					wireType = 5 // I32
+				default:
+					if num.IsFloat() {
+						wireType = 1 // I64 (double)
+					}
 				}
 			}
 		}
@@ -155,9 +160,14 @@ func (a *assembler) assembleLiteral(l ast.Literal, inBlock bool) {
 		suffix := num.Suffix().Text()
 		switch suffix {
 		case "i32":
-			v, _ := num.Int()
 			var buf [4]byte
-			binary.LittleEndian.PutUint32(buf[:], uint32(v))
+			if num.IsFloat() {
+				f, _ := num.Float()
+				binary.LittleEndian.PutUint32(buf[:], math.Float32bits(float32(f)))
+			} else {
+				v, _ := num.Int()
+				binary.LittleEndian.PutUint32(buf[:], uint32(v))
+			}
 			a.buf = append(a.buf, buf[:]...)
 		case "f32":
 			f, _ := num.Float()
@@ -165,9 +175,14 @@ func (a *assembler) assembleLiteral(l ast.Literal, inBlock bool) {
 			binary.LittleEndian.PutUint32(buf[:], math.Float32bits(float32(f)))
 			a.buf = append(a.buf, buf[:]...)
 		case "i64":
-			v, _ := num.Int()
 			var buf [8]byte
-			binary.LittleEndian.PutUint64(buf[:], v)
+			if num.IsFloat() {
+				f, _ := num.Float()
+				binary.LittleEndian.PutUint64(buf[:], math.Float64bits(f))
+			} else {
+				v, _ := num.Int()
+				binary.LittleEndian.PutUint64(buf[:], v)
+			}
 			a.buf = append(a.buf, buf[:]...)
 		case "f64":
 			f, _ := num.Float()
@@ -180,8 +195,15 @@ func (a *assembler) assembleLiteral(l ast.Literal, inBlock bool) {
 			zigzag := uint64((v << 1) ^ (v >> 63))
 			a.writeVarint(zigzag)
 		default:
-			v, _ := num.Int()
-			a.writeVarint(v)
+			if num.IsFloat() {
+				f, _ := num.Float()
+				var buf [8]byte
+				binary.LittleEndian.PutUint64(buf[:], math.Float64bits(f))
+				a.buf = append(a.buf, buf[:]...)
+			} else {
+				v, _ := num.Int()
+				a.writeVarint(v)
+			}
 		}
 	case token.String:
 		open, _ := tok.AsString().Quotes()
