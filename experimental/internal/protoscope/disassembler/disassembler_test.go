@@ -19,7 +19,6 @@ import (
 	"testing"
 )
 
-
 func TestMaxDepth(t *testing.T) {
 	// Nested groups: 0x0b = SGROUP tag 1, 0x0c = EGROUP tag 1
 	// 3 levels of nesting

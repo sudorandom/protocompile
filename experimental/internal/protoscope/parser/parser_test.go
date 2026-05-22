@@ -69,7 +69,6 @@ func TestParse(t *testing.T) {
 	}
 }
 
-
 func TestSliceReallocation(t *testing.T) {
 	var buf bytes.Buffer
 	for i := 1; i <= 1000; i++ {

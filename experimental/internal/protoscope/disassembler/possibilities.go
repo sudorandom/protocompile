@@ -350,4 +350,3 @@ func formatSingleLine(text string) string {
 	}
 	return "{ " + strings.Join(cleaned, " ") + " }"
 }
-

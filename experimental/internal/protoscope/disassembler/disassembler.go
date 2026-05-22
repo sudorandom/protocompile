@@ -282,7 +282,6 @@ func (d *disassembler) disassembleSGroup(out io.Writer, indent int, tag uint64, 
 	return nil
 }
 
-
 func (d *disassembler) dumpHex(out io.Writer, indent int) error {
 	if d.off >= len(d.data) {
 		return nil
@@ -347,7 +346,6 @@ func checkMessageStructure(data []byte) (ok bool, fields int) {
 	return off == len(data), fields
 }
 
-
 func isMessage(data []byte) bool {
 	ok, fields := checkMessageStructure(data)
 	if !ok || fields == 0 {
@@ -410,7 +408,3 @@ func toHexSpace(data []byte) string {
 	}
 	return sb.String()
 }
-
-
-
-
