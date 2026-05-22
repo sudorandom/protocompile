@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/bufbuild/protocompile/experimental/internal/protoscope/assembler"
 	"github.com/bufbuild/protocompile/experimental/internal/protoscope/ast"
@@ -170,9 +171,9 @@ func Hover(path string, text []byte, line, col int) (*HoverInfo, error) {
 		tok := l.Token()
 		var sb strings.Builder
 		sb.WriteString("### Literal Value\n")
-		fmt.Fprintf(&sb, "- **Raw Text:** `%s`\n", tok.Text())
 
 		if tok.Kind() == token.Number {
+			fmt.Fprintf(&sb, "- **Raw Text:** `%s`\n", tok.Text())
 			num := tok.AsNumber()
 			fmt.Fprintf(&sb, "- **Type:** `Number` (suffix: `%s`)\n", num.Suffix().Text())
 			if v, exact := num.Int(); exact {
@@ -188,9 +189,14 @@ func Hover(path string, text []byte, line, col int) (*HoverInfo, error) {
 				fmt.Fprintf(&sb, "- **Floating Point:** `%g`\n", fval)
 			}
 		} else if tok.Kind() == token.String {
-			sb.WriteString("- **Type:** `String`\n")
 			sToken := tok.AsString()
 			open, _ := sToken.Quotes()
+			if open.Text() == "`" {
+				fmt.Fprintf(&sb, "- **Raw Hex:** `%s`\n", tok.Text())
+			} else {
+				fmt.Fprintf(&sb, "- **Raw Text:** `%s`\n", tok.Text())
+			}
+			sb.WriteString("- **Type:** `String`\n")
 			if open.Text() == "`" {
 				// Hex string literal
 				decoded, err := hexDecode(tok.Text())
@@ -311,10 +317,18 @@ func varintBytes(v uint64) string {
 }
 
 func isPrintable(data []byte) bool {
-	for _, b := range data {
-		if (b < 32 || b > 126) && b != '\n' && b != '\r' && b != '\t' {
+	if !utf8.Valid(data) {
+		return false
+	}
+	for len(data) > 0 {
+		r, size := utf8.DecodeRune(data)
+		if r == utf8.RuneError {
 			return false
 		}
+		if !unicode.IsPrint(r) && !unicode.IsSpace(r) {
+			return false
+		}
+		data = data[size:]
 	}
 	return true
 }

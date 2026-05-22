@@ -126,6 +126,7 @@ func TestHover(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, h2)
 	assert.Contains(t, h2.Text, "Literal Value")
+	assert.Contains(t, h2.Text, "**Raw Text:** `150`")
 	assert.Contains(t, h2.Text, "**Decimal:** `150`")
 	assert.Contains(t, h2.Text, "**Hexadecimal:** `0x96`")
 
@@ -134,8 +135,16 @@ func TestHover(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, h3)
 	assert.Contains(t, h3.Text, "Literal Value")
+	assert.Contains(t, h3.Text, "**Raw Hex:** ``01 02 03``")
 	assert.Contains(t, h3.Text, "**Type:** `String`")
 	assert.Contains(t, h3.Text, "**Hex Length:** `3 bytes`")
+
+	// Test hover over Hex string literal with UTF-8
+	utf8Input := "1: {`e6 97 a5 e6 9c ac e8 aa 9e`}\n"
+	h4, err := Hover("utf8.protoscope", []byte(utf8Input), 1, 5)
+	require.NoError(t, err)
+	require.NotNil(t, h4)
+	assert.Contains(t, h4.Text, "**Decoded Text:** `日本語`", "Should decode UTF-8 text")
 }
 
 func TestPossibilities(t *testing.T) {
