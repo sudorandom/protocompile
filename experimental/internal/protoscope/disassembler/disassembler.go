@@ -152,6 +152,8 @@ func (d *disassembler) disassemble(out io.Writer, indent int, groupTag uint64, d
 		u, n := binary.Uvarint(d.data[d.off:])
 		if n <= 0 {
 			// Not a valid varint, dump remaining as hex
+			fmt.Fprint(out, strings.Repeat("  ", indent))
+			fmt.Fprintln(out, "# Error: invalid varint tag")
 			return d.dumpHex(out, indent)
 		}
 
@@ -166,8 +168,14 @@ func (d *disassembler) disassemble(out io.Writer, indent int, groupTag uint64, d
 			}
 		}
 
-		if wireType > 5 {
+		if wireType > 5 || tag == 0 {
 			// Invalid wire type, this isn't a protobuf stream or it's corrupted.
+			fmt.Fprint(out, strings.Repeat("  ", indent))
+			if tag == 0 {
+				fmt.Fprintln(out, "# Error: invalid tag 0; this might be using a different framing variant (e.g. gRPC)")
+			} else {
+				fmt.Fprintf(out, "# Error: invalid wire type %d; this might be corrupted or using a different framing variant (e.g. gRPC)\n", wireType)
+			}
 			return d.dumpHex(out, indent)
 		}
 

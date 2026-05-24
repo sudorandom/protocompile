@@ -345,9 +345,17 @@ func Hover(path string, text []byte, line, col int) (*HoverInfo, error) {
 					fmt.Fprintf(&sb, "- **Hex Length:** `%d bytes`\n", len(decoded))
 					if isPrintable(decoded) {
 						fmt.Fprintf(&sb, "- **Decoded Text:** `%s`\n", string(decoded))
-					} else {
-						fmt.Fprintf(&sb, "- **Decoded Hex Bytes:** `%02X`\n", decoded)
 					}
+				}
+			} else {
+				// Standard string literal
+				strVal := sToken.Text()
+				byteLen := len(strVal)
+				runeLen := utf8.RuneCountInString(strVal)
+				if byteLen == runeLen {
+					fmt.Fprintf(&sb, "- **Length:** `%d bytes`\n", byteLen)
+				} else {
+					fmt.Fprintf(&sb, "- **Length:** `%d bytes` (`%d characters`)\n", byteLen, runeLen)
 				}
 			}
 		}

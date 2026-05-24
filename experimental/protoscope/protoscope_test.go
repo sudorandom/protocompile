@@ -145,6 +145,13 @@ func TestHover(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, h4)
 	assert.Contains(t, h4.Text, "**Decoded Text:** `日本語`", "Should decode UTF-8 text")
+
+	// Test hover over standard string literal with multi-byte runes
+	stdStringInput := `1: "Hello, UTF-8 text! 日本語, 𐍈, 💻, 🚀"`
+	h5, err := Hover("std.protoscope", []byte(stdStringInput), 1, 5)
+	require.NoError(t, err)
+	require.NotNil(t, h5)
+	assert.Contains(t, h5.Text, "**Length:** `46 bytes` (`31 characters`)", "Should output correct byte/character length")
 }
 
 func TestPossibilities(t *testing.T) {
@@ -301,5 +308,16 @@ func TestAllVariantsRoundtrip(t *testing.T) {
 	}
 }
 
+func TestDisassembleFallback(t *testing.T) {
+	t.Parallel()
 
+	// gRPC message `1: 55` has bytes:
+	// 00 00 00 00 02 08 37
+	grpcBytes := []byte{0x00, 0x00, 0x00, 0x00, 0x02, 0x08, 0x37}
 
+	// Disassembling without variant should trigger invalid tag 0 error fallback comment
+	disassembled, err := Disassemble(grpcBytes, DisassembleOptions{})
+	require.NoError(t, err)
+	assert.Contains(t, disassembled, "# Error: invalid tag 0; this might be using a different framing variant (e.g. gRPC)")
+	assert.Contains(t, disassembled, "`00 00 00 00 02 08 37`")
+}
