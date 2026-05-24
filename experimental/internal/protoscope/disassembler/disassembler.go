@@ -31,6 +31,7 @@ type Options struct {
 	ExplicitLengthPrefixes bool
 	NoGroups               bool
 	MaxDepth               int
+	Variant                string
 }
 
 // Disassemble translates Protobuf wire format into protoscope text.
@@ -40,9 +41,77 @@ func Disassemble(data []byte, out io.Writer) error {
 
 // DisassembleWithOptions translates Protobuf wire format into protoscope text with options.
 func DisassembleWithOptions(data []byte, out io.Writer, opts Options) error {
-	d := &disassembler{data: data, opts: opts}
-	return d.disassemble(out, 0, 0, 0)
+	variant := strings.ToLower(strings.ReplaceAll(strings.ReplaceAll(opts.Variant, " ", ""), "-", ""))
+	switch variant {
+	case "grpc", "connectrpc", "connect":
+		off := 0
+		first := true
+		for off < len(data) {
+			if off+5 > len(data) {
+				return fmt.Errorf("unexpected EOF reading header at offset %d", off)
+			}
+			flags := data[off]
+			length := binary.BigEndian.Uint32(data[off+1 : off+5])
+			off += 5
+
+			if off+int(length) > len(data) {
+				return fmt.Errorf("length %d out of bounds at offset %d", length, off)
+			}
+
+			payload := data[off : off+int(length)]
+			off += int(length)
+
+			if !first {
+				fmt.Fprintln(out, "---")
+			}
+			first = false
+
+			if flags != 0 {
+				fmt.Fprintf(out, "# flags: %d\n", flags)
+			}
+
+			d := &disassembler{data: payload, opts: opts}
+			if err := d.disassemble(out, 0, 0, 0); err != nil {
+				return err
+			}
+		}
+		return nil
+
+	case "varint", "varintdelimited":
+		off := 0
+		first := true
+		for off < len(data) {
+			l, n := binary.Uvarint(data[off:])
+			if n <= 0 {
+				return fmt.Errorf("invalid varint length prefix at offset %d", off)
+			}
+			off += n
+
+			if off+int(l) > len(data) {
+				return fmt.Errorf("length %d out of bounds at offset %d", l, off)
+			}
+
+			payload := data[off : off+int(l)]
+			off += int(l)
+
+			if !first {
+				fmt.Fprintln(out, "---")
+			}
+			first = false
+
+			d := &disassembler{data: payload, opts: opts}
+			if err := d.disassemble(out, 0, 0, 0); err != nil {
+				return err
+			}
+		}
+		return nil
+
+	default:
+		d := &disassembler{data: data, opts: opts}
+		return d.disassemble(out, 0, 0, 0)
+	}
 }
+
 
 type disassembler struct {
 	data []byte

@@ -162,3 +162,144 @@ func TestPossibilities(t *testing.T) {
 	}
 	assert.True(t, foundVarint, "Should have found varint representation")
 }
+
+
+func TestMultiFrameAndVariants(t *testing.T) {
+	// 1. Raw variant with single frame
+	rawInput := `1: 150
+2: "hello"
+`
+	binary, diags := AssembleWithOptions("raw.protoscope", []byte(rawInput), AssembleOptions{Variant: "raw"})
+	require.Empty(t, diags)
+	// Output should be concatenated binary:
+	// 1: 150 -> 08 96 01
+	// 2: "hello" -> 12 05 68 65 6c 6c 6f
+	expectedRaw := []byte{0x08, 0x96, 0x01, 0x12, 0x05, 0x68, 0x65, 0x6c, 0x6c, 0x6f}
+	assert.Equal(t, expectedRaw, binary)
+
+
+	// Since raw has no headers, disassemble raw treats the whole stream as 1 message.
+	disText, err := Disassemble(binary, DisassembleOptions{Variant: "raw"})
+	require.NoError(t, err)
+	assert.Contains(t, disText, "1: 150")
+	assert.Contains(t, disText, `2: {"hello"}`) // disassembled as tag 2 since it was concatenated
+
+	// 2. Varint delimited variant with multiple frames
+	varintInput := `1: 150
+---
+2: "hello"
+`
+	binaryV, diagsV := AssembleWithOptions("varint.protoscope", []byte(varintInput), AssembleOptions{Variant: "varint"})
+	require.Empty(t, diagsV)
+	// Frame 1: len 3, Frame 2: len 7
+	expectedV := []byte{
+		3, 0x08, 0x96, 0x01,
+		7, 0x12, 0x05, 0x68, 0x65, 0x6c, 0x6c, 0x6f,
+	}
+	assert.Equal(t, expectedV, binaryV)
+
+	disTextV, err := Disassemble(binaryV, DisassembleOptions{Variant: "varint"})
+	require.NoError(t, err)
+	assert.Equal(t, "1: 150\n---\n2: {\"hello\"}\n", disTextV)
+
+	// 3. gRPC / ConnectRPC variant with custom flags
+	grpcInput := `# flags: 1
+1: 150
+---
+# flag: 2
+2: "hello"
+`
+	binaryG, diagsG := AssembleWithOptions("grpc.protoscope", []byte(grpcInput), AssembleOptions{Variant: "grpc"})
+	require.Empty(t, diagsG)
+	// Frame 1: flags 1, len 3 -> 01, 00 00 00 03, 08 96 01
+	// Frame 2: flags 2, len 7 -> 02, 00 00 00 07, 12 05 68 65 6c 6c 6f
+	expectedG := []byte{
+		1, 0x00, 0x00, 0x00, 0x03, 0x08, 0x96, 0x01,
+		2, 0x00, 0x00, 0x00, 0x07, 0x12, 0x05, 0x68, 0x65, 0x6c, 0x6c, 0x6f,
+	}
+	assert.Equal(t, expectedG, binaryG)
+
+	disTextG, err := Disassemble(binaryG, DisassembleOptions{Variant: "grpc"})
+	require.NoError(t, err)
+	assert.Equal(t, "# flags: 1\n1: 150\n---\n# flags: 2\n2: {\"hello\"}\n", disTextG)
+
+	// 4. Test diagnostics shifting across multiple frames
+	invalidInput := `1: 150
+---
+2: {
+# syntax error in second frame
+`
+	diagsErr := Diagnostics("test.protoscope", []byte(invalidInput))
+	require.NotEmpty(t, diagsErr)
+	// The error should be in the second frame (after line 2)
+	assert.Greater(t, diagsErr[0].Range.Start.Line, 2)
+
+	// 5. Test DocumentSymbols and Hover on multi-frame inputs
+	symbolInput := `1: 150
+---
+2: 30
+`
+	symbols, diagsSym := DocumentSymbols("symbols.protoscope", []byte(symbolInput))
+	require.Empty(t, diagsSym)
+	require.Len(t, symbols, 2)
+	// Symbol 1 starts on line 1
+	assert.Equal(t, 1, symbols[0].Range.Start.Line)
+	// Symbol 2 starts on line 3 (after ---)
+	assert.Equal(t, 3, symbols[1].Range.Start.Line)
+
+	// Hover test
+	hover1, err := Hover("symbols.protoscope", []byte(symbolInput), 1, 1)
+	require.NoError(t, err)
+	require.NotNil(t, hover1)
+	assert.Equal(t, 1, hover1.Range.Start.Line)
+
+	hover2, err := Hover("symbols.protoscope", []byte(symbolInput), 3, 1)
+	require.NoError(t, err)
+	require.NotNil(t, hover2)
+	assert.Equal(t, 3, hover2.Range.Start.Line)
+
+	// 6. Test multi-frame raw variant error
+	multiRawInput := "1: 150\n---\n2: \"hello\"\n"
+	_, rawDiags := AssembleWithOptions("raw.protoscope", []byte(multiRawInput), AssembleOptions{Variant: "raw"})
+	require.NotEmpty(t, rawDiags)
+	assert.Equal(t, "multiple frames are not supported for raw variant", rawDiags[0].Message)
+	assert.Equal(t, 2, rawDiags[0].Range.Start.Line)
+}
+
+func TestAllVariantsRoundtrip(t *testing.T) {
+	t.Parallel()
+
+	input := `1: 150
+---
+2: {"hello"}
+`
+
+	variants := []string{
+		"grpc",
+		"connect",
+		"connectrpc",
+		"varint",
+		"varint delimited",
+	}
+
+	for _, variant := range variants {
+		t.Run(variant, func(t *testing.T) {
+			// Assemble
+			binary, diags := AssembleWithOptions("test.protoscope", []byte(input), AssembleOptions{Variant: variant})
+			require.Empty(t, diags)
+			require.NotEmpty(t, binary)
+
+			// Disassemble
+			disassembled, err := Disassemble(binary, DisassembleOptions{Variant: variant})
+			require.NoError(t, err)
+
+			// The output should contain our fields and be properly split by ---
+			assert.Contains(t, disassembled, "1: 150")
+			assert.Contains(t, disassembled, "---")
+			assert.Contains(t, disassembled, `2: {"hello"}`)
+		})
+	}
+}
+
+
+

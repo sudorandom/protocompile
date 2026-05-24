@@ -15,8 +15,10 @@
 package protoscope
 
 import (
+	"encoding/binary"
 	"encoding/hex"
 	"fmt"
+	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -64,19 +66,117 @@ type DisassembleOptions struct {
 	ExplicitLengthPrefixes bool
 	NoGroups               bool
 	MaxDepth               int
+	Variant                string
+}
+
+// AssembleOptions contains assembly options.
+type AssembleOptions struct {
+	Variant string
 }
 
 // Assemble parses and compiles protoscope text directly to protobuf wire binary.
 func Assemble(path string, text []byte) ([]byte, []Diagnostic) {
-	src := source.NewFile(path, string(text))
-	r := &report.Report{}
-	file, ok := parser.Parse(path, src, r)
-	diags := convertDiagnostics(r)
-	if !ok || file == nil {
-		return nil, diags
+	return AssembleWithOptions(path, text, AssembleOptions{})
+}
+
+// AssembleWithOptions compiles protoscope text directly to protobuf wire binary with options.
+func AssembleWithOptions(path string, text []byte, opts AssembleOptions) ([]byte, []Diagnostic) {
+	frames := splitFrames(text)
+	parentFile := source.NewFile(path, string(text))
+	var allDiags []Diagnostic
+	var payloads [][]byte
+	var flags []byte
+
+	variant := strings.ToLower(strings.ReplaceAll(strings.ReplaceAll(opts.Variant, " ", ""), "-", ""))
+	if len(frames) > 1 && (variant == "raw" || variant == "") {
+		line := frames[1].lineOffset
+		allDiags = append(allDiags, Diagnostic{
+			Range: Range{
+				Start: Position{Line: line, Column: 1},
+				End:   Position{Line: line, Column: 4},
+			},
+			Message: "multiple frames are not supported for raw variant",
+			Level:   SeverityError,
+		})
+		return nil, allDiags
 	}
-	out := assembler.Assemble(file)
-	return out, diags
+
+	hasError := false
+	for _, frame := range frames {
+		// Extract flags comment from this frame if present.
+		var frameFlags byte
+		frameLines := strings.Split(frame.text, "\n")
+		for _, line := range frameLines {
+			trimmed := strings.TrimSpace(line)
+			if trimmed == "" {
+				continue
+			}
+			if strings.HasPrefix(trimmed, "#") {
+				comment := strings.TrimSpace(strings.TrimPrefix(trimmed, "#"))
+				if strings.HasPrefix(comment, "flags:") {
+					valStr := strings.TrimSpace(strings.TrimPrefix(comment, "flags:"))
+					if val, err := strconv.ParseUint(valStr, 10, 8); err == nil {
+						frameFlags = byte(val)
+					}
+				} else if strings.HasPrefix(comment, "flag:") {
+					valStr := strings.TrimSpace(strings.TrimPrefix(comment, "flag:"))
+					if val, err := strconv.ParseUint(valStr, 10, 8); err == nil {
+						frameFlags = byte(val)
+					}
+				}
+			} else {
+				break
+			}
+		}
+		flags = append(flags, frameFlags)
+
+		src := source.NewFile(path, frame.text)
+		r := &report.Report{}
+		file, ok := parser.Parse(path, src, r)
+
+		report.ShiftReportSpans(r, parentFile, frame.byteOffset)
+
+		diags := convertDiagnostics(r)
+		allDiags = append(allDiags, diags...)
+		if !ok || file == nil {
+			hasError = true
+			continue
+		}
+
+		out := assembler.Assemble(file)
+		payloads = append(payloads, out)
+	}
+
+	if hasError {
+		return nil, allDiags
+	}
+
+	// Apply the variant framing
+	var result []byte
+	switch variant {
+	case "grpc", "connectrpc", "connect":
+		for i, payload := range payloads {
+			header := make([]byte, 5)
+			header[0] = flags[i]
+			binary.BigEndian.PutUint32(header[1:5], uint32(len(payload)))
+			result = append(result, header...)
+			result = append(result, payload...)
+		}
+	case "varint", "varintdelimited":
+		for _, payload := range payloads {
+			var lengthBuf [10]byte
+			n := binary.PutUvarint(lengthBuf[:], uint64(len(payload)))
+			result = append(result, lengthBuf[:n]...)
+			result = append(result, payload...)
+		}
+	default:
+		// raw / default: concatenate all payloads
+		for _, payload := range payloads {
+			result = append(result, payload...)
+		}
+	}
+
+	return result, allDiags
 }
 
 // Disassemble converts protobuf wire binary back to protoscope text.
@@ -87,6 +187,7 @@ func Disassemble(data []byte, opts DisassembleOptions) (string, error) {
 		ExplicitLengthPrefixes: opts.ExplicitLengthPrefixes,
 		NoGroups:               opts.NoGroups,
 		MaxDepth:               opts.MaxDepth,
+		Variant:                opts.Variant,
 	}
 	err := disassembler.DisassembleWithOptions(data, &buf, disOpts)
 	if err != nil {
@@ -97,10 +198,17 @@ func Disassemble(data []byte, opts DisassembleOptions) (string, error) {
 
 // Diagnostics parses the text and returns any syntactic or structural diagnostics.
 func Diagnostics(path string, text []byte) []Diagnostic {
-	src := source.NewFile(path, string(text))
-	r := &report.Report{}
-	_, _ = parser.Parse(path, src, r)
-	return convertDiagnostics(r)
+	frames := splitFrames(text)
+	parentFile := source.NewFile(path, string(text))
+	var allDiags []Diagnostic
+	for _, frame := range frames {
+		src := source.NewFile(path, frame.text)
+		r := &report.Report{}
+		_, _ = parser.Parse(path, src, r)
+		report.ShiftReportSpans(r, parentFile, frame.byteOffset)
+		allDiags = append(allDiags, convertDiagnostics(r)...)
+	}
+	return allDiags
 }
 
 // DocumentSymbol represents a simplified symbol hierarchy (e.g. fields, groups, blocks).
@@ -114,18 +222,33 @@ type DocumentSymbol struct {
 
 // DocumentSymbols returns a hierarchy of symbols within the protoscope file.
 func DocumentSymbols(path string, text []byte) ([]DocumentSymbol, []Diagnostic) {
-	src := source.NewFile(path, string(text))
-	r := &report.Report{}
-	file, ok := parser.Parse(path, src, r)
-	diags := convertDiagnostics(r)
-	if !ok || file == nil {
-		return nil, diags
+	frames := splitFrames(text)
+	parentFile := source.NewFile(path, string(text))
+	var allSymbols []DocumentSymbol
+	var allDiags []Diagnostic
+
+	for _, frame := range frames {
+		src := source.NewFile(path, frame.text)
+		r := &report.Report{}
+		file, ok := parser.Parse(path, src, r)
+		report.ShiftReportSpans(r, parentFile, frame.byteOffset)
+		diags := convertDiagnostics(r)
+		allDiags = append(allDiags, diags...)
+
+		if ok && file != nil {
+			var symbols []DocumentSymbol
+			for decl := range seq.Values(file.Decls()) {
+				symbols = append(symbols, collectSymbols(decl)...)
+			}
+			if frame.lineOffset > 0 {
+				for i := range symbols {
+					shiftSymbolRange(&symbols[i], frame.lineOffset)
+				}
+			}
+			allSymbols = append(allSymbols, symbols...)
+		}
 	}
-	var symbols []DocumentSymbol
-	for decl := range seq.Values(file.Decls()) {
-		symbols = append(symbols, collectSymbols(decl)...)
-	}
-	return symbols, diags
+	return allSymbols, allDiags
 }
 
 // HoverInfo holds information to display on hover.
@@ -136,14 +259,28 @@ type HoverInfo struct {
 
 // Hover returns hover documentation for the token/node at the given line/column.
 func Hover(path string, text []byte, line, col int) (*HoverInfo, error) {
-	src := source.NewFile(path, string(text))
+	frames := splitFrames(text)
+
+	var targetFrame *frameInfo
+	for i := len(frames) - 1; i >= 0; i-- {
+		if line > frames[i].lineOffset {
+			targetFrame = &frames[i]
+			break
+		}
+	}
+	if targetFrame == nil {
+		return nil, nil
+	}
+
+	localLine := line - targetFrame.lineOffset
+	src := source.NewFile(path, targetFrame.text)
 	r := &report.Report{}
 	file, _ := parser.Parse(path, src, r)
 	if file == nil {
 		return nil, nil
 	}
 
-	loc := src.InverseLocation(line, col, length.UTF16)
+	loc := src.InverseLocation(localLine, col, length.UTF16)
 	offset := loc.Offset
 
 	node := findNode(file, offset)
@@ -151,8 +288,12 @@ func Hover(path string, text []byte, line, col int) (*HoverInfo, error) {
 		return nil, nil
 	}
 
+	hoverRange := convertSpan(node.Span())
+	hoverRange.Start.Line += targetFrame.lineOffset
+	hoverRange.End.Line += targetFrame.lineOffset
+
 	hover := &HoverInfo{
-		Range: convertSpan(node.Span()),
+		Range: hoverRange,
 	}
 
 	switch node.Kind() {
@@ -434,3 +575,59 @@ func mapRepresentations(internalReps []disassembler.Representation) []Representa
 func Possibilities(wireType int, payload []byte) []Representation {
 	return mapRepresentations(disassembler.Possibilities(wireType, payload))
 }
+
+type frameInfo struct {
+	text       string
+	byteOffset int
+	lineOffset int
+}
+
+func splitFrames(text []byte) []frameInfo {
+	var frames []frameInfo
+	s := string(text)
+	lines := strings.Split(s, "\n")
+	var currentFrame strings.Builder
+	frameLineOffset := 0
+	frameByteOffset := 0
+	currentByteOffset := 0
+
+	for i, line := range lines {
+		lineLen := len(line)
+		if i < len(lines)-1 {
+			lineLen += 1 // add 1 for '\n'
+		}
+
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "---" {
+			frames = append(frames, frameInfo{
+				text:       currentFrame.String(),
+				byteOffset: frameByteOffset,
+				lineOffset: frameLineOffset,
+			})
+			currentFrame.Reset()
+			frameLineOffset = i + 1
+			frameByteOffset = currentByteOffset + lineLen
+		} else {
+			currentFrame.WriteString(line)
+			if i < len(lines)-1 {
+				currentFrame.WriteByte('\n')
+			}
+		}
+		currentByteOffset += lineLen
+	}
+	frames = append(frames, frameInfo{
+		text:       currentFrame.String(),
+		byteOffset: frameByteOffset,
+		lineOffset: frameLineOffset,
+	})
+	return frames
+}
+
+func shiftSymbolRange(s *DocumentSymbol, lineOffset int) {
+	s.Range.Start.Line += lineOffset
+	s.Range.End.Line += lineOffset
+	for i := range s.Children {
+		shiftSymbolRange(&s.Children[i], lineOffset)
+	}
+}
+
