@@ -501,4 +501,3 @@ func ShiftReportSpans(r *Report, file *source.File, offset int) {
 		r.Diagnostics[i].ShiftSpan(file, offset)
 	}
 }
-

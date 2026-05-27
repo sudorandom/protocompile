@@ -108,50 +108,62 @@ func TestDocumentSymbols(t *testing.T) {
 	assert.Equal(t, "field", field3.Kind)
 }
 
-func TestHover(t *testing.T) {
+func TestInspect(t *testing.T) {
 	input := `1: 150
 2: {
   3: ` + "`" + `01 02 03` + "`" + `
 }
 `
 	// Test hover over "1:" (line 1, column 1)
-	h1, err := Hover("test.protoscope", []byte(input), 1, 1)
+	h1, err := Inspect("test.protoscope", []byte(input), 1, 1)
 	require.NoError(t, err)
 	require.NotNil(t, h1)
-	assert.Contains(t, h1.Text, "Field Tag")
-	assert.Contains(t, h1.Text, "**Field Number:** `1`")
+	assert.Equal(t, InspectKindField, h1.Kind)
+	require.NotNil(t, h1.Field)
+	assert.Equal(t, "1", h1.Field.Tag)
 
 	// Test hover over "150" (line 1, column 4)
-	h2, err := Hover("test.protoscope", []byte(input), 1, 4)
+	h2, err := Inspect("test.protoscope", []byte(input), 1, 4)
 	require.NoError(t, err)
 	require.NotNil(t, h2)
-	assert.Contains(t, h2.Text, "Literal Value")
-	assert.Contains(t, h2.Text, "**Raw Text:** `150`")
-	assert.Contains(t, h2.Text, "**Decimal:** `150`")
-	assert.Contains(t, h2.Text, "**Hexadecimal:** `0x96`")
+	assert.Equal(t, InspectKindLiteral, h2.Kind)
+	require.NotNil(t, h2.Literal)
+	assert.Equal(t, "Number", h2.Literal.Type)
+	assert.Equal(t, "150", h2.Literal.RawText)
+	assert.True(t, h2.Literal.HasInt)
+	assert.Equal(t, uint64(150), h2.Literal.IntValue)
 
 	// Test hover over Hex string literal (line 3, column 6)
-	h3, err := Hover("test.protoscope", []byte(input), 3, 6)
+	h3, err := Inspect("test.protoscope", []byte(input), 3, 6)
 	require.NoError(t, err)
 	require.NotNil(t, h3)
-	assert.Contains(t, h3.Text, "Literal Value")
-	assert.Contains(t, h3.Text, "**Raw Hex:** ``01 02 03``")
-	assert.Contains(t, h3.Text, "**Type:** `String`")
-	assert.Contains(t, h3.Text, "**Hex Length:** `3 bytes`")
+	assert.Equal(t, InspectKindLiteral, h3.Kind)
+	require.NotNil(t, h3.Literal)
+	assert.Equal(t, "String", h3.Literal.Type)
+	assert.True(t, h3.Literal.IsHexHexQuote)
+	assert.Equal(t, 3, h3.Literal.HexLength)
 
 	// Test hover over Hex string literal with UTF-8
 	utf8Input := "1: {`e6 97 a5 e6 9c ac e8 aa 9e`}\n"
-	h4, err := Hover("utf8.protoscope", []byte(utf8Input), 1, 5)
+	h4, err := Inspect("utf8.protoscope", []byte(utf8Input), 1, 5)
 	require.NoError(t, err)
 	require.NotNil(t, h4)
-	assert.Contains(t, h4.Text, "**Decoded Text:** `日本語`", "Should decode UTF-8 text")
+	assert.Equal(t, InspectKindLiteral, h4.Kind)
+	require.NotNil(t, h4.Literal)
+	assert.True(t, h4.Literal.IsHexHexQuote)
+	assert.Equal(t, "\u65e5\u672c\u8a9e", h4.Literal.DecodedText)
 
 	// Test hover over standard string literal with multi-byte runes
-	stdStringInput := `1: "Hello, UTF-8 text! 日本語, 𐍈, 💻, 🚀"`
-	h5, err := Hover("std.protoscope", []byte(stdStringInput), 1, 5)
+	stdStringInput := "1: \"Hello, UTF-8 text! \u65e5\u672c\u8a9e, \U00010348, \U0001f4bb, \U0001f680\""
+	h5, err := Inspect("std.protoscope", []byte(stdStringInput), 1, 5)
 	require.NoError(t, err)
 	require.NotNil(t, h5)
-	assert.Contains(t, h5.Text, "**Length:** `46 bytes` (`31 characters`)", "Should output correct byte/character length")
+	assert.Equal(t, InspectKindLiteral, h5.Kind)
+	require.NotNil(t, h5.Literal)
+	assert.Equal(t, "String", h5.Literal.Type)
+	assert.False(t, h5.Literal.IsHexHexQuote)
+	assert.Equal(t, 46, h5.Literal.ByteLength)
+	assert.Equal(t, 31, h5.Literal.CharLength)
 }
 
 func TestPossibilities(t *testing.T) {
@@ -170,7 +182,6 @@ func TestPossibilities(t *testing.T) {
 	assert.True(t, foundVarint, "Should have found varint representation")
 }
 
-
 func TestMultiFrameAndVariants(t *testing.T) {
 	// 1. Raw variant with single frame
 	rawInput := `1: 150
@@ -183,7 +194,6 @@ func TestMultiFrameAndVariants(t *testing.T) {
 	// 2: "hello" -> 12 05 68 65 6c 6c 6f
 	expectedRaw := []byte{0x08, 0x96, 0x01, 0x12, 0x05, 0x68, 0x65, 0x6c, 0x6c, 0x6f}
 	assert.Equal(t, expectedRaw, binary)
-
 
 	// Since raw has no headers, disassemble raw treats the whole stream as 1 message.
 	disText, err := Disassemble(binary, DisassembleOptions{Variant: "raw"})
@@ -255,12 +265,12 @@ func TestMultiFrameAndVariants(t *testing.T) {
 	assert.Equal(t, 3, symbols[1].Range.Start.Line)
 
 	// Hover test
-	hover1, err := Hover("symbols.protoscope", []byte(symbolInput), 1, 1)
+	hover1, err := Inspect("symbols.protoscope", []byte(symbolInput), 1, 1)
 	require.NoError(t, err)
 	require.NotNil(t, hover1)
 	assert.Equal(t, 1, hover1.Range.Start.Line)
 
-	hover2, err := Hover("symbols.protoscope", []byte(symbolInput), 3, 1)
+	hover2, err := Inspect("symbols.protoscope", []byte(symbolInput), 3, 1)
 	require.NoError(t, err)
 	require.NotNil(t, hover2)
 	assert.Equal(t, 3, hover2.Range.Start.Line)
@@ -291,6 +301,7 @@ func TestAllVariantsRoundtrip(t *testing.T) {
 
 	for _, variant := range variants {
 		t.Run(variant, func(t *testing.T) {
+			t.Parallel()
 			// Assemble
 			binary, diags := AssembleWithOptions("test.protoscope", []byte(input), AssembleOptions{Variant: variant})
 			require.Empty(t, diags)

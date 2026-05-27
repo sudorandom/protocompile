@@ -112,7 +112,6 @@ func DisassembleWithOptions(data []byte, out io.Writer, opts Options) error {
 	}
 }
 
-
 type disassembler struct {
 	data []byte
 	off  int

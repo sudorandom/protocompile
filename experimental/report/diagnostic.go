@@ -392,4 +392,3 @@ func (d *Diagnostic) ShiftSpan(file *source.File, offset int) {
 		d.snippets[i].Span.End += offset
 	}
 }
-

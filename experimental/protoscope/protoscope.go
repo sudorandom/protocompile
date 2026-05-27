@@ -83,7 +83,7 @@ func Assemble(path string, text []byte) ([]byte, []Diagnostic) {
 func AssembleWithOptions(path string, text []byte, opts AssembleOptions) ([]byte, []Diagnostic) {
 	frames := splitFrames(text)
 	parentFile := source.NewFile(path, string(text))
-	var allDiags []Diagnostic
+	allDiags := make([]Diagnostic, 0, len(frames))
 	var payloads [][]byte
 	var flags []byte
 
@@ -200,7 +200,7 @@ func Disassemble(data []byte, opts DisassembleOptions) (string, error) {
 func Diagnostics(path string, text []byte) []Diagnostic {
 	frames := splitFrames(text)
 	parentFile := source.NewFile(path, string(text))
-	var allDiags []Diagnostic
+	allDiags := make([]Diagnostic, 0, len(frames))
 	for _, frame := range frames {
 		src := source.NewFile(path, frame.text)
 		r := &report.Report{}
@@ -224,8 +224,8 @@ type DocumentSymbol struct {
 func DocumentSymbols(path string, text []byte) ([]DocumentSymbol, []Diagnostic) {
 	frames := splitFrames(text)
 	parentFile := source.NewFile(path, string(text))
-	var allSymbols []DocumentSymbol
-	var allDiags []Diagnostic
+	allSymbols := make([]DocumentSymbol, 0, len(frames))
+	allDiags := make([]Diagnostic, 0, len(frames))
 
 	for _, frame := range frames {
 		src := source.NewFile(path, frame.text)
@@ -251,14 +251,51 @@ func DocumentSymbols(path string, text []byte) ([]DocumentSymbol, []Diagnostic) 
 	return allSymbols, allDiags
 }
 
-// HoverInfo holds information to display on hover.
-type HoverInfo struct {
-	Range Range
-	Text  string // Markdown formatted hover info
+type InspectKind int
+
+const (
+	InspectKindField InspectKind = iota + 1
+	InspectKindLiteral
+	InspectKindBlock
+)
+
+type FieldInspectInfo struct {
+	Tag      string
+	WireType string
 }
 
-// Hover returns hover documentation for the token/node at the given line/column.
-func Hover(path string, text []byte, line, col int) (*HoverInfo, error) {
+type LiteralInspectInfo struct {
+	RawText       string
+	Type          string // "Number" or "String"
+	Suffix        string
+	VarintBytes   string
+	DecodedText   string
+	IntValue      uint64
+	FloatValue    float64
+	Zigzag        uint64
+	HexLength     int
+	ByteLength    int
+	CharLength    int
+	HasInt        bool
+	HasFloat      bool
+	IsHexHexQuote bool // true if backtick quote `...`
+}
+
+type BlockInspectInfo struct {
+	Name string // "{" or "!{"
+}
+
+// InspectInfo holds structured information to display on inspect (hover).
+type InspectInfo struct {
+	Range   Range
+	Kind    InspectKind
+	Field   *FieldInspectInfo
+	Literal *LiteralInspectInfo
+	Block   *BlockInspectInfo
+}
+
+// Inspect returns structured documentation for the token/node at the given line/column.
+func Inspect(path string, text []byte, line, col int) (*InspectInfo, error) {
 	frames := splitFrames(text)
 
 	var targetFrame *frameInfo
@@ -288,94 +325,80 @@ func Hover(path string, text []byte, line, col int) (*HoverInfo, error) {
 		return nil, nil
 	}
 
-	hoverRange := convertSpan(node.Span())
-	hoverRange.Start.Line += targetFrame.lineOffset
-	hoverRange.End.Line += targetFrame.lineOffset
+	inspectRange := convertSpan(node.Span())
+	inspectRange.Start.Line += targetFrame.lineOffset
+	inspectRange.End.Line += targetFrame.lineOffset
 
-	hover := &HoverInfo{
-		Range: hoverRange,
+	inspect := &InspectInfo{
+		Range: inspectRange,
 	}
 
 	switch node.Kind() {
 	case ast.DeclKindField:
 		f := node.AsField()
-		var sb strings.Builder
-		sb.WriteString("### Field Tag\n")
-		fmt.Fprintf(&sb, "- **Field Number:** `%s`\n", f.Tag().Text())
-		if wt := f.WireType(); !wt.IsZero() && wt.Text() != "" {
-			fmt.Fprintf(&sb, "- **Wire Type:** `%s`\n", wt.Text())
+		inspect.Kind = InspectKindField
+		inspect.Field = &FieldInspectInfo{
+			Tag: f.Tag().Text(),
 		}
-		hover.Text = sb.String()
+		if wt := f.WireType(); !wt.IsZero() && wt.Text() != "" {
+			inspect.Field.WireType = wt.Text()
+		}
 
 	case ast.DeclKindLiteral:
 		l := node.AsLiteral()
 		tok := l.Token()
-		var sb strings.Builder
-		sb.WriteString("### Literal Value\n")
+		inspect.Kind = InspectKindLiteral
+		inspect.Literal = &LiteralInspectInfo{
+			RawText: tok.Text(),
+		}
 
 		if tok.Kind() == token.Number {
-			fmt.Fprintf(&sb, "- **Raw Text:** `%s`\n", tok.Text())
+			inspect.Literal.Type = "Number"
 			num := tok.AsNumber()
-			fmt.Fprintf(&sb, "- **Type:** `Number` (suffix: `%s`)\n", num.Suffix().Text())
+			inspect.Literal.Suffix = num.Suffix().Text()
 			if v, exact := num.Int(); exact {
-				fmt.Fprintf(&sb, "- **Decimal:** `%d`\n", v)
-				fmt.Fprintf(&sb, "- **Hexadecimal:** `0x%X`\n", v)
-				fmt.Fprintf(&sb, "- **Binary:** `0b%b`\n", v)
-				fmt.Fprintf(&sb, "- **As Varint Bytes:** `%s`\n", varintBytes(v))
+				inspect.Literal.HasInt = true
+				inspect.Literal.IntValue = v
+				inspect.Literal.VarintBytes = varintBytes(v)
 
 				// Interpret as signed 64-bit to show zigzag encoding if applicable
 				sval := int64(v)
-				fmt.Fprintf(&sb, "- **Zigzag Encoded:** `%d`\n", (sval<<1)^(sval>>63))
+				inspect.Literal.Zigzag = uint64((sval << 1) ^ (sval >> 63))
 			} else if fval, exactf := num.Float(); exactf {
-				fmt.Fprintf(&sb, "- **Floating Point:** `%g`\n", fval)
+				inspect.Literal.HasFloat = true
+				inspect.Literal.FloatValue = fval
 			}
 		} else if tok.Kind() == token.String {
+			inspect.Literal.Type = "String"
 			sToken := tok.AsString()
 			open, _ := sToken.Quotes()
 			if open.Text() == "`" {
-				fmt.Fprintf(&sb, "- **Raw Hex:** `%s`\n", tok.Text())
-			} else {
-				fmt.Fprintf(&sb, "- **Raw Text:** `%s`\n", tok.Text())
-			}
-			sb.WriteString("- **Type:** `String`\n")
-			if open.Text() == "`" {
+				inspect.Literal.IsHexHexQuote = true
 				// Hex string literal
 				decoded, err := hexDecode(tok.Text())
 				if err == nil {
-					fmt.Fprintf(&sb, "- **Hex Length:** `%d bytes`\n", len(decoded))
+					inspect.Literal.HexLength = len(decoded)
 					if isPrintable(decoded) {
-						fmt.Fprintf(&sb, "- **Decoded Text:** `%s`\n", string(decoded))
+						inspect.Literal.DecodedText = string(decoded)
 					}
 				}
 			} else {
 				// Standard string literal
 				strVal := sToken.Text()
-				byteLen := len(strVal)
-				runeLen := utf8.RuneCountInString(strVal)
-				if byteLen == runeLen {
-					fmt.Fprintf(&sb, "- **Length:** `%d bytes`\n", byteLen)
-				} else {
-					fmt.Fprintf(&sb, "- **Length:** `%d bytes` (`%d characters`)\n", byteLen, runeLen)
-				}
+				inspect.Literal.ByteLength = len(strVal)
+				inspect.Literal.CharLength = utf8.RuneCountInString(strVal)
 			}
 		}
-		hover.Text = sb.String()
 
 	case ast.DeclKindBlock:
 		b := node.AsBlock()
-		var sb strings.Builder
-		name := b.Token().Text()
-		if name == "!{" {
-			sb.WriteString("### Group Block\n")
-			sb.WriteString("Represents a deprecated Protobuf Group wire format structure (`!{ ... }`).")
-		} else {
-			sb.WriteString("### Length-Prefixed Block\n")
-			sb.WriteString("Represents a length-delimited payload (`{ ... }`), such as a submessage, packed repeated field, or raw string/bytes.")
+		inspect.Kind = InspectKindBlock
+		inspect.Block = &BlockInspectInfo{
+			Name: b.Token().Text(),
 		}
-		hover.Text = sb.String()
 	}
 
-	return hover, nil
+	return inspect, nil
 }
 
 func collectSymbols(decl ast.DeclAny) []DocumentSymbol {
@@ -602,7 +625,7 @@ func splitFrames(text []byte) []frameInfo {
 	for i, line := range lines {
 		lineLen := len(line)
 		if i < len(lines)-1 {
-			lineLen += 1 // add 1 for '\n'
+			lineLen++ // add 1 for '\n'
 		}
 
 		trimmed := strings.TrimSpace(line)
@@ -638,4 +661,3 @@ func shiftSymbolRange(s *DocumentSymbol, lineOffset int) {
 		shiftSymbolRange(&s.Children[i], lineOffset)
 	}
 }
-
